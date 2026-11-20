@@ -11,7 +11,6 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,12 +37,9 @@ object StudyNotifications {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "瀛︿範绐佸嚮妫€鏌?,
+                "学习突击检查",
                 NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "闅忔満鎻愰啋浣犱笂浼犲涔犺瘉鏄庡苟绛旈"
-                enableVibration(true)
-            }
+            )
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
@@ -62,8 +58,8 @@ object StudyNotifications {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
-            .setContentTitle("绐佸嚮妫€鏌ワ細璇疯瘉鏄庝綘姝ｅ湪瀛︿範")
-            .setContentText("涓婁紶涓€寮犲涔犵幇鍦虹収鐗囷紝骞跺畬鎴愪竴閬撻")
+            .setContentTitle("突击检查：请证明你正在学习")
+            .setContentText("上传一张学习现场照片，并完成一道题")
             .setContentIntent(pending)
             .setFullScreenIntent(pending, true)
             .setAutoCancel(true)
@@ -83,10 +79,13 @@ object Scheduler {
     private const val UNIQUE_WORK = "study_random_check"
 
     fun ensureScheduled(context: Context) {
-        val workManager = WorkManager.getInstance(context)
-        val infos = workManager.getWorkInfosForUniqueWork(UNIQUE_WORK).get()
-        if (infos.any { !it.state.isFinished }) return
-        scheduleNext(context)
+        val infos = WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork(UNIQUE_WORK)
+            .get()
+        val active = infos.any {
+            it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING
+        }
+        if (!active) scheduleNext(context)
     }
 
     fun scheduleNext(context: Context) {
@@ -96,7 +95,6 @@ object Scheduler {
 
         val request = OneTimeWorkRequestBuilder<CheckWorker>()
             .setInitialDelay(delay, TimeUnit.MINUTES)
-            .addTag("study_check")
             .build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
@@ -131,25 +129,26 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: android.content.SharedPreferences
     private lateinit var statusText: TextView
-    private var dialogPreview: ImageView? = null
-    private var dialogHasPhoto = false
+    private var photoSelected = false
+    private var photoPreview: ImageView? = null
     private var currentQuestion: Question? = null
 
     private val pickPhoto = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            dialogPreview?.setImageURI(uri)
-            dialogPreview?.visibility = View.VISIBLE
-            dialogHasPhoto = true
+            photoPreview?.setImageURI(uri)
+            photoPreview?.visibility = View.VISIBLE
+            photoSelected = true
         }
     }
 
+    @Suppress("DEPRECATION")
     private val takePhoto = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val bitmap = result.data?.getParcelableExtra<Bitmap>("data")
             if (bitmap != null) {
-                dialogPreview?.setImageBitmap(bitmap)
-                dialogPreview?.visibility = View.VISIBLE
-                dialogHasPhoto = true
+                photoPreview?.setImageBitmap(bitmap)
+                photoPreview?.visibility = View.VISIBLE
+                photoSelected = true
             }
         }
     }
@@ -158,7 +157,7 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             Toast.makeText(
                 this,
-                if (granted) "鎻愰啋宸插紑鍚? else "鏈幏寰楅€氱煡鏉冮檺",
+                if (granted) "提醒已开启" else "未获得通知权限",
                 Toast.LENGTH_SHORT
             ).show()
             Scheduler.ensureScheduled(this)
@@ -170,7 +169,6 @@ class MainActivity : AppCompatActivity() {
         StudyNotifications.createChannel(this)
         buildUi()
         Scheduler.ensureScheduled(this)
-
         if (intent.getBooleanExtra(EXTRA_OPEN_CHECK, false)) {
             showCheck()
         }
@@ -192,52 +190,51 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "鑷範鐩戠潱鍛?
+            text = "自习监督员"
             textSize = 28f
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
 
         root.addView(TextView(this).apply {
-            text = "鎶娾€滄垜鍦ㄥ鈥濆彉鎴愮湅寰楄鐨勮瘉鎹?
+            text = "把“我在学”变成看得见的证据"
             textSize = 14f
             setTextColor(0xFF68756E.toInt())
         })
 
         statusText = TextView(this).apply {
-            text = "绐佸嚮妫€鏌ュ凡寮€鍚?
             textSize = 18f
             setTextColor(0xFF176B4D.toInt())
-            setPadding(0, 40, 0, 8)
+            setPadding(0, 36, 0, 8)
         }
         root.addView(statusText)
 
-        val subject = editText("瀛︿範瀛︾ / 鍐呭锛屼緥濡傦細楂樼瓑鏁板绗?绔?)
+        val subject = makeInput("学习学科 / 内容")
         subject.setText(prefs.getString("subject", ""))
-        root.addView(label("瀛︿範瀛︾ / 鍐呭"))
+        root.addView(makeLabel("学习学科 / 内容"))
         root.addView(subject)
 
-        val keywords = editText("鍏抽敭璇嶏紝鐢ㄩ€楀彿鍒嗛殧锛屼緥濡傦細鏋侀檺, 瀵兼暟")
+        val keywords = makeInput("关键词，用逗号分隔")
         keywords.setText(prefs.getString("keywords", ""))
-        root.addView(label("鍏抽敭璇?))
+        root.addView(makeLabel("关键词"))
         root.addView(keywords)
 
-        val book = editText("鑻辫鏁欐潗")
-        book.setText(prefs.getString("book", "鍒樻檽鐕曘€婅嫳璇洓绾т綘杩樺湪鑳屽崟璇嶅悧銆?))
-        root.addView(label("鑻辫鏁欐潗"))
+        val book = makeInput("英语教材")
+        book.setText(prefs.getString("book", "刘晓燕《英语四级你还在背单词吗》"))
+        root.addView(makeLabel("英语教材"))
         root.addView(book)
 
         val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val pageStart = editText("璧峰椤?).apply {
+        val pageStart = makeInput("起始页").apply {
             setText(prefs.getInt("pageStart", 1).toString())
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
         }
-        val pageEnd = editText("缁撴潫椤?).apply {
+        val pageEnd = makeInput("结束页").apply {
             setText(prefs.getInt("pageEnd", 20).toString())
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
         }
         pageRow.addView(pageStart, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         pageRow.addView(pageEnd, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(label("鑻辫鍑洪椤电爜鑼冨洿"))
+        root.addView(makeLabel("英语出题页码范围"))
         root.addView(pageRow)
 
         val spinner = Spinner(this)
@@ -245,13 +242,13 @@ class MainActivity : AppCompatActivity() {
         spinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            intervals.map { "姣?$it鈥?{it.toInt() + 20} 鍒嗛挓" }
+            intervals.map { "每 $it–${it.toInt() + 20} 分钟" }
         )
         spinner.setSelection(intervals.indexOf(prefs.getInt("interval", 25).toString()).coerceAtLeast(0))
-        root.addView(label("绐佸嚮妫€鏌ラ棿闅?))
+        root.addView(makeLabel("突击检查间隔"))
         root.addView(spinner)
 
-        root.addView(button("淇濆瓨瀛︿範璁″垝") {
+        root.addView(makeButton("保存学习计划") {
             prefs.edit()
                 .putString("subject", subject.text.toString().trim())
                 .putString("keywords", keywords.text.toString().trim())
@@ -261,11 +258,11 @@ class MainActivity : AppCompatActivity() {
                 .putInt("interval", intervals[spinner.selectedItemPosition].toInt())
                 .apply()
             Scheduler.scheduleNext(this)
-            Toast.makeText(this, "瀛︿範璁″垝宸蹭繚瀛?, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "学习计划已保存", Toast.LENGTH_SHORT).show()
             updateStatus()
         })
 
-        root.addView(button("寮€鍚€氱煡鎻愰啋") {
+        root.addView(makeButton("开启通知提醒") {
             if (Build.VERSION.SDK_INT >= 33 &&
                 ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
@@ -273,21 +270,20 @@ class MainActivity : AppCompatActivity() {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else {
                 Scheduler.ensureScheduled(this)
-                Toast.makeText(this, "鎻愰啋宸插紑鍚?, Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "提醒已开启", Toast.LENGTH_SHORT).show()
             }
         })
 
-        root.addView(button("绔嬪嵆绐佸嚮妫€鏌?) {
+        root.addView(makeButton("立即突击检查") {
             showCheck()
         })
 
-        val history = TextView(this).apply {
-            text = "宸插畬鎴愭鏌ワ細${prefs.getInt("done", 0)} 娆?   姝ｇ‘锛?{prefs.getInt("good", 0)} 娆?
+        root.addView(TextView(this).apply {
+            text = "已完成检查：${prefs.getInt("done", 0)} 次    正确：${prefs.getInt("good", 0)} 次"
             textSize = 14f
             setTextColor(0xFF68756E.toInt())
             setPadding(0, 36, 0, 0)
-        }
-        root.addView(history)
+        })
 
         setContentView(root)
         updateStatus()
@@ -296,16 +292,14 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         val done = prefs.getInt("done", 0)
         val good = prefs.getInt("good", 0)
-        statusText.text = if (done == 0) {
-            "鍑嗗寮€濮嬩粖澶╃殑鑷範"
-        } else if (done == good) {
-            "浠婂ぉ鐨勭姸鎬佸緢绋筹紝缁х画淇濇寔"
-        } else {
-            "宸插畬鎴?$done 娆℃鏌ワ紝姝ｇ‘ $good 娆?
+        statusText.text = when {
+            done == 0 -> "准备开始今天的自习"
+            done == good -> "今天的状态很稳，继续保持"
+            else -> "已完成 $done 次检查，正确 $good 次"
         }
     }
 
-    private fun label(text: String): TextView {
+    private fun makeLabel(text: String): TextView {
         return TextView(this).apply {
             this.text = text
             textSize = 14f
@@ -314,17 +308,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun editText(hint: String): EditText {
+    private fun makeInput(hint: String): EditText {
         return EditText(this).apply {
             this.hint = hint
             setPadding(24, 20, 24, 20)
         }
     }
 
-    private fun button(text: String, onClick: () -> Unit): Button {
+    private fun makeButton(text: String, action: () -> Unit): Button {
         return Button(this).apply {
             this.text = text
-            setOnClickListener { onClick() }
+            setOnClickListener { action() }
         }
     }
 
@@ -339,57 +333,50 @@ class MainActivity : AppCompatActivity() {
         val end = prefs.getInt("pageEnd", 20)
 
         return when {
-            subject.contains("鑻辫") || book.contains("鑻辫鍥涚骇") -> Question(
-                text = "鏍规嵁 $book 绗?$start鈥?end 椤碉紝涓嬪垪鍝釜璇嶆渶鎺ヨ繎鈥滃潥鎸佷笉鎳堚€濈殑鍚箟锛?,
-                options = listOf("persist", "pretend", "provide", "predict"),
-                answer = 0,
-                subject = "鑻辫鍥涚骇"
+            subject.contains("英语") || book.contains("英语四级") -> Question(
+                "根据 $book 第 $start–$end 页，下列哪个词最接近“坚持不懈”的含义？",
+                listOf("persist", "pretend", "provide", "predict"),
+                0,
+                "英语四级"
             )
-            subject.contains("鏁板") -> Question(
-                text = if (keywords.isNotEmpty()) {
-                    "鍏充簬鈥?{keywords.first()}鈥濓紝涓嬪垪璇存硶姝ｇ‘鐨勬槸锛?
-                } else {
-                    "鍑芥暟鍦ㄦ煇鐐瑰彲瀵硷紝鏄惁涓€瀹氳兘鎺ㄥ嚭璇ョ偣杩炵画锛?
-                },
-                options = listOf("鑳?, "涓嶈兘", "涓€瀹氫笉", "鏃犳硶鍒ゆ柇"),
-                answer = if (keywords.isNotEmpty()) 1 else 0,
-                subject = subject
+            subject.contains("数学") -> Question(
+                if (keywords.isNotEmpty()) "关于“${keywords.first()}”，下列说法正确的是？"
+                else "函数在某点可导，是否一定能推出该点连续？",
+                listOf("能", "不能", "一定不", "无法判断"),
+                if (keywords.isNotEmpty()) 1 else 0,
+                subject
             )
-            subject.contains("鐗╃悊") -> Question(
-                text = "鐗涢】绗簩瀹氬緥鐨勮〃杈惧紡鏄紵",
-                options = listOf("F=ma", "E=mc虏", "V=IR", "p=mv虏"),
-                answer = 0,
-                subject = subject
+            subject.contains("物理") -> Question(
+                "牛顿第二定律的表达式是？",
+                listOf("F=ma", "E=mc²", "V=IR", "p=mv²"),
+                0,
+                subject
             )
             else -> Question(
-                text = if (keywords.isNotEmpty()) {
-                    "璇风敤涓€鍙ヨ瘽瑙ｉ噴鈥?{keywords.first()}鈥濈殑鏍稿績鍚箟銆?
-                } else {
-                    "璇风畝杩颁粖澶╁涔犲唴瀹逛腑鏈€閲嶈鐨勪竴涓粨璁恒€?
-                },
-                options = listOf("宸叉帉鎻?, "闇€瑕佸涔?, "杩樹笉鐞嗚В", "绋嶅悗琛ュ厖"),
-                answer = 0,
-                subject = subject.ifEmpty { "瀛︿範" }
+                if (keywords.isNotEmpty()) "请用一句话解释“${keywords.first()}”的核心含义。"
+                else "请简述今天学习内容中最重要的一个结论。",
+                listOf("已掌握", "需要复习", "还不理解", "稍后补充"),
+                0,
+                subject.ifEmpty { "学习" }
             )
         }
     }
 
     private fun showCheck() {
         currentQuestion = randomQuestion()
-        dialogHasPhoto = false
+        photoSelected = false
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 12)
         }
 
-        val questionText = TextView(this).apply {
+        layout.addView(TextView(this).apply {
             text = currentQuestion?.text
             textSize = 17f
             setTypeface(null, android.graphics.Typeface.BOLD)
             setPadding(0, 8, 0, 16)
-        }
-        layout.addView(questionText)
+        })
 
         val options = RadioGroup(this)
         currentQuestion?.options?.forEachIndexed { index, option ->
@@ -402,8 +389,16 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(options)
 
-        val photoButton = Button(this).apply {
-            text = "鎷嶇収 / 閫夋嫨瀛︿範璇佹槑"
+        val preview = ImageView(this).apply {
+            visibility = View.GONE
+            adjustViewBounds = true
+            maxHeight = 600
+            setPadding(0, 16, 0, 8)
+        }
+        photoPreview = preview
+
+        layout.addView(Button(this).apply {
+            text = "拍照 / 选择学习证明"
             setOnClickListener {
                 val camera = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                 if (camera.resolveActivity(packageManager) != null) {
@@ -412,16 +407,7 @@ class MainActivity : AppCompatActivity() {
                     pickPhoto.launch("image/*")
                 }
             }
-        }
-        layout.addView(photoButton)
-
-        val preview = ImageView(this).apply {
-            visibility = View.GONE
-            adjustViewBounds = true
-            maxHeight = 600
-            setPadding(0, 16, 0, 8)
-        }
-        dialogPreview = preview
+        })
         layout.addView(preview)
 
         val result = TextView(this).apply {
@@ -431,25 +417,25 @@ class MainActivity : AppCompatActivity() {
         layout.addView(result)
 
         val dialog = AlertDialog.Builder(this)
-            .setTitle("绐佸嚮妫€鏌ワ細璇疯瘉鏄庝綘姝ｅ湪瀛︿範")
+            .setTitle("突击检查：请证明你正在学习")
             .setView(layout)
-            .setPositiveButton("鎻愪氦璇佹槑", null)
-            .setNegativeButton("绋嶅悗澶勭悊", null)
+            .setPositiveButton("提交证明", null)
+            .setNegativeButton("稍后处理", null)
             .create()
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val selectedId = options.checkedRadioButtonId
-                if (!dialogHasPhoto) {
+                if (!photoSelected) {
                     result.visibility = View.VISIBLE
                     result.setTextColor(0xFFB54242.toInt())
-                    result.text = "璇峰厛涓婁紶涓€寮犲涔犵幇鍦虹収鐗囥€?
+                    result.text = "请先上传一张学习现场照片。"
                     return@setOnClickListener
                 }
                 if (selectedId == -1) {
                     result.visibility = View.VISIBLE
                     result.setTextColor(0xFFB54242.toInt())
-                    result.text = "璇峰厛閫夋嫨涓€涓瓟妗堛€?
+                    result.text = "请先选择一个答案。"
                     return@setOnClickListener
                 }
 
@@ -462,14 +448,11 @@ class MainActivity : AppCompatActivity() {
 
                 result.visibility = View.VISIBLE
                 result.setTextColor(if (correct) 0xFF176B4D.toInt() else 0xFFB54242.toInt())
-                result.text = if (correct) {
-                    "璇佹槑鎻愪氦鎴愬姛锛屽洖绛旀纭紒"
-                } else {
-                    "鐓х墖宸茶褰曪紝杩欓亾棰樿繕闇€瑕佸涔犮€?
-                }
+                result.text = if (correct) "证明提交成功，回答正确！"
+                else "照片已记录，这道题还需要复习。"
 
                 updateStatus()
-                window.decorView.postDelayed({ dialog.dismiss() }, 1200)
+                window.decorView.postDelayed({ dialog.dismiss() }, 1200L)
             }
         }
 
