@@ -384,11 +384,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun makeCard(title: String): LinearLayout {
-        val card = MaterialCardView(this).apply {
-            setCardCornerRadius(22f)
-            setCardElevation(4f)
-            setCardBackgroundColor(Color.WHITE)
-            setUseCompatPadding(true)
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
+            elevation = 4f
+            background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 22f }
+            
+            
         }
         val inner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
