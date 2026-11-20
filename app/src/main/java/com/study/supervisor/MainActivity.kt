@@ -385,10 +385,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun makeCard(title: String): LinearLayout {
         val card = MaterialCardView(this).apply {
-            cardCornerRadius = 22f
-            cardElevation = 4f
+            setCardCornerRadius(22f)
+            setCardElevation(4f)
             setCardBackgroundColor(Color.WHITE)
-            useCompatPadding = true
+            setUseCompatPadding(true)
         }
         val inner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
