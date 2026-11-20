@@ -11,8 +11,8 @@ android {
         applicationId = "com.study.supervisor"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -37,4 +37,5 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }
