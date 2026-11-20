@@ -384,32 +384,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun makeCard(title: String): LinearLayout {
-        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
-            elevation = 4f
-            background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 22f }
-            
-            
+    val card = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        elevation = 4f
+        setPadding(32, 26, 32, 30)
+        background = GradientDrawable().apply {
+            setColor(Color.WHITE)
+            cornerRadius = 22f
         }
-        val inner = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 26, 32, 30)
-        }
-        inner.addView(TextView(this).apply {
-            text = title
-            textSize = 19f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFF153F31.toInt())
-            setPadding(0, 0, 0, 14)
-        })
-        card.addView(inner)
-        val params = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        params.bottomMargin = 18
-        card.layoutParams = params
-        return inner
     }
+
+    card.addView(TextView(this).apply {
+        text = title
+        textSize = 19f
+        setTypeface(null, android.graphics.Typeface.BOLD)
+        setTextColor(0xFF153F31.toInt())
+        setPadding(0, 0, 0, 14)
+    })
+
+    val params = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    params.bottomMargin = 18
+    card.layoutParams = params
+    return card
+}
 
     private fun makeLabel(text: String): TextView {
         return TextView(this).apply {
