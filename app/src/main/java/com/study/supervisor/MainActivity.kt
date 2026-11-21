@@ -16,9 +16,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
-import android.text.SpannableStringBuilder
-import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
+import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,16 +28,28 @@ import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 data class Question(
     val text: String,
     val options: List<String>,
-    val answer: Int,
-    val subject: String
+    val answer: Int
+)
+
+data class VocabEntry(
+    val word: String,
+    val meaning: String,
+    val phrase: String,
+    val phraseMeaning: String,
+    val sentence: String,
+    val sentenceMeaning: String
 )
 
 object StudyNotifications {
@@ -67,7 +77,6 @@ object StudyNotifications {
             context, 1001, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
             .setContentTitle("英语突击检查")
@@ -105,11 +114,9 @@ object Scheduler {
         val min = prefs.getInt("interval_min", 25).coerceAtLeast(1)
         val max = prefs.getInt("interval_max", 45).coerceAtLeast(min)
         val delay = Random.nextInt(min, max + 1).toLong()
-
         val request = OneTimeWorkRequestBuilder<CheckWorker>()
             .setInitialDelay(delay, TimeUnit.MINUTES)
             .build()
-
         WorkManager.getInstance(context).enqueueUniqueWork(
             UNIQUE_WORK,
             ExistingWorkPolicy.REPLACE,
@@ -128,9 +135,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : Worker(context, 
 
 class BootReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Scheduler.ensureScheduled(context)
-        }
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) Scheduler.ensureScheduled(context)
     }
 }
 
@@ -138,6 +143,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_OPEN_CHECK = "open_check"
+        private const val COLOR_BG = 0xFF0B1C2C
+        private const val COLOR_CARD = 0xFF102B3D
+        private const val COLOR_TEAL = 0xFF14B8A6
+        private const val COLOR_TEXT = 0xFFFFFFFF.toInt()
+        private const val COLOR_MUTED = 0xFFB8D8D4.toInt()
 
         private val MEANINGS = mapOf(
             "study" to "学习", "book" to "书", "word" to "单词", "sentence" to "句子",
@@ -152,10 +162,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var prefs: android.content.SharedPreferences
-    private lateinit var statusText: TextView
-    private lateinit var wordCountText: TextView
-    private lateinit var wordPreview: TextView
-    private lateinit var generatedPreview: TextView
+    private lateinit var content: LinearLayout
+    private lateinit var nav: LinearLayout
+    private var currentPage = "home"
+    private var entries: MutableList<VocabEntry> = mutableListOf()
     private var photoSelected = false
     private var photoPreview: ImageView? = null
     private var currentQuestion: Question? = null
@@ -182,25 +192,23 @@ class MainActivity : AppCompatActivity() {
 
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-            if (!uris.isNullOrEmpty()) recognizeWords(uris)
+            if (!uris.isNullOrEmpty()) importImages(uris)
         }
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            Toast.makeText(
-                this,
-                if (granted) "提醒已开启" else "未获得通知权限",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, if (granted) "提醒已开启" else "未获得通知权限", Toast.LENGTH_SHORT).show()
             Scheduler.ensureScheduled(this)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("study_supervisor", MODE_PRIVATE)
+        entries = loadEntries()
         StudyNotifications.createChannel(this)
-        buildUi()
+        buildShell()
         Scheduler.ensureScheduled(this)
+        showPage("home")
         if (intent.getBooleanExtra(EXTRA_OPEN_CHECK, false)) showCheck()
     }
 
@@ -210,447 +218,862 @@ class MainActivity : AppCompatActivity() {
         if (intent.getBooleanExtra(EXTRA_OPEN_CHECK, false)) showCheck()
     }
 
-    private fun buildUi() {
-        val scroll = ScrollView(this)
+    private fun buildShell() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 40, 32, 60)
-            setBackgroundColor(0xFFF3F7F5.toInt())
+            setBackgroundColor(COLOR_BG)
         }
-        scroll.addView(root)
-        setContentView(scroll)
 
-        root.addView(TextView(this).apply {
-            text = "英语自习监督员"
-            textSize = 30f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF153F31.toInt())
-        })
-        root.addView(TextView(this).apply {
-            text = "上传单词 · 生成短语句子 · 突击检查"
-            textSize = 14f
-            setTextColor(0xFF68756E.toInt())
-            setPadding(0, 6, 0, 24)
-        })
-
-        val statusCard = makeCard("今日状态")
-        statusText = TextView(this).apply {
-            textSize = 20f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF176B4D.toInt())
+        content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
         }
-        statusCard.addView(statusText)
-        statusCard.addView(TextView(this).apply {
-            text = "每次检查都需要照片证明 + 一道英语题"
-            textSize = 13f
-            setTextColor(0xFF68756E.toInt())
-            setPadding(0, 8, 0, 0)
-        })
-        root.addView(statusCard)
 
-        val rangeCard = makeCard("英语学习范围")
-        rangeCard.addView(makeLabel("教材"))
-        rangeCard.addView(makeStaticText("刘晓燕《英语四级你还在背单词吗》"))
-        rangeCard.addView(makeLabel("出题页码范围"))
+        val scroll = ScrollView(this).apply { addView(content) }
+        root.addView(scroll)
 
-        val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val pageStart = makeInput("起始页").apply {
-            setText(prefs.getInt("pageStart", 1).toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
+        nav = buildNav()
+        root.addView(nav)
+        setContentView(root)
+    }
+
+    private fun buildNav(): LinearLayout {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.WHITE)
+            setPadding(8, 12, 8, 18)
         }
-        val pageEnd = makeInput("结束页").apply {
-            setText(prefs.getInt("pageEnd", 20).toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        pageRow.addView(pageStart, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        pageRow.addView(pageEnd, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        rangeCard.addView(pageRow)
-
-        rangeCard.addView(makeLabel("突击间隔（分钟）"))
-        val intervalRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val intervalMin = makeInput("最短").apply {
-            setText(prefs.getInt("interval_min", 25).toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        val intervalMax = makeInput("最长").apply {
-            setText(prefs.getInt("interval_max", 45).toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        intervalRow.addView(intervalMin, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        intervalRow.addView(intervalMax, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        rangeCard.addView(intervalRow)
-
-        rangeCard.addView(makeButton("保存学习范围") {
-            val min = intervalMin.text.toString().toIntOrNull() ?: 25
-            val max = intervalMax.text.toString().toIntOrNull() ?: 45
-            prefs.edit()
-                .putInt("pageStart", pageStart.text.toString().toIntOrNull() ?: 1)
-                .putInt("pageEnd", pageEnd.text.toString().toIntOrNull() ?: 20)
-                .putInt("interval_min", min.coerceAtLeast(1))
-                .putInt("interval_max", max.coerceAtLeast(min))
-                .apply()
-            Scheduler.scheduleNext(this)
-            Toast.makeText(this, "学习范围已保存", Toast.LENGTH_SHORT).show()
-            updateStatus()
-        })
-        root.addView(rangeCard)
-
-        val wordCard = makeCard("上传英语单词")
-        wordCard.addView(makeLabel("手动输入单词"))
-        val manualWords = makeInput("用逗号分隔，例如：persist, allocate, focus")
-        wordCard.addView(manualWords)
-        wordCard.addView(makeButton("添加手动单词") {
-            addWords(manualWords.text.toString())
-            manualWords.text?.clear()
-        })
-        wordCard.addView(makeButton("拍照 / 选择多张单词图片") {
-            pickWordPhotos.launch("image/*")
-        })
-        wordCard.addView(TextView(this).apply {
-            text = "图片会逐张识别，避免一次处理太多导致闪退。"
-            textSize = 12f
-            setTextColor(0xFF68756E.toInt())
-            setPadding(0, 8, 0, 8)
-        })
-
-        wordCountText = TextView(this).apply {
-            textSize = 15f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF176B4D.toInt())
-            setPadding(0, 10, 0, 6)
-        }
-        wordCard.addView(wordCountText)
-
-        wordPreview = TextView(this).apply {
-            textSize = 14f
-            setTextColor(0xFF25352E.toInt())
-            setPadding(0, 4, 0, 8)
-            setBackgroundColor(0xFFF7FAF8.toInt())
-        }
-        wordCard.addView(wordPreview)
-        root.addView(wordCard)
-
-        val generateCard = makeCard("短语和句子")
-        generateCard.addView(TextView(this).apply {
-            text = "每个单词一行，附带短语、句子和中文意思。"
-            textSize = 13f
-            setTextColor(0xFF68756E.toInt())
-            setPadding(0, 0, 0, 12)
-        })
-        generateCard.addView(makeButton("刷新学习内容") {
-            refreshWordUi()
-            Toast.makeText(this, "学习内容已刷新", Toast.LENGTH_SHORT).show()
-        })
-        generatedPreview = TextView(this).apply {
-            textSize = 15f
-            setTextColor(0xFF25352E.toInt())
-            setPadding(0, 12, 0, 0)
-        }
-        generateCard.addView(generatedPreview)
-        root.addView(generateCard)
-
-        val actionCard = makeCard("学习检查")
-        actionCard.addView(makeButton("开启通知提醒") {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            } else {
-                Scheduler.ensureScheduled(this)
-                Toast.makeText(this, "提醒已开启", Toast.LENGTH_SHORT).show()
+        listOf("首页", "突击", "词库", "档案", "设置").forEach { label ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-        })
-        actionCard.addView(makeButton("立即突击检查") {
-            showCheck()
-        })
-        actionCard.addView(makeButton("打开词库") {
-            startActivity(Intent(this, VocabularyActivity::class.java))
-        })
-        root.addView(actionCard)
-
-        root.addView(TextView(this).apply {
-            text = historyText()
-            textSize = 13f
-            setTextColor(0xFF68756E.toInt())
-            setPadding(8, 28, 8, 0)
-        })
-
-        refreshWordUi()
-        updateStatus()
-    }
-
-    private fun historyText(): String {
-        val done = prefs.getInt("done", 0)
-        val good = prefs.getInt("good", 0)
-        return "已完成检查：$done 次    正确：$good 次"
-    }
-
-    private fun updateStatus() {
-        val done = prefs.getInt("done", 0)
-        val good = prefs.getInt("good", 0)
-        statusText.text = when {
-            done == 0 -> "准备开始今天的英语自习"
-            done == good -> "今天的状态很稳，继续保持"
-            else -> "已完成 $done 次检查，正确 $good 次"
+            item.addView(TextView(this).apply {
+                text = when (label) {
+                    "首页" -> "⌂"; "突击" -> "⚡"; "词库" -> "▤"; "档案" -> "◷"; else -> "⚙"
+                }
+                textSize = 20f
+                setTextColor(if (label == currentPage) COLOR_TEAL else 0xFF6B7280.toInt())
+            })
+            item.addView(TextView(this).apply {
+                text = label
+                textSize = 12f
+                setTypeface(null, if (label == currentPage) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (label == currentPage) COLOR_TEAL else 0xFF6B7280.toInt())
+            })
+            item.setOnClickListener {
+                when (label) {
+                    "首页" -> showPage("home")
+                    "突击" -> showCheck()
+                    "词库" -> showPage("vocab")
+                    "档案" -> showPage("archive")
+                    "设置" -> showPage("settings")
+                }
+            }
+            bar.addView(item)
         }
+        return bar
     }
 
-    private fun makeCard(title: String): LinearLayout {
+    private fun refreshNav() {
+        val old = nav
+        val parent = old.parent as LinearLayout
+        val index = parent.indexOfChild(old)
+        parent.removeView(old)
+        nav = buildNav()
+        parent.addView(nav, index)
+    }
+
+    private fun showPage(page: String) {
+        currentPage = page
+        content.removeAllViews()
+        when (page) {
+            "home" -> buildHome()
+            "vocab" -> buildVocab()
+            "archive" -> buildArchive()
+            "settings" -> buildSettings()
+        }
+        refreshNav()
+    }
+
+    private fun buildHome() {
+        val pad = 32
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad + 8, 48, pad + 8, 36)
+            background = GradientDrawable().apply {
+                orientation = GradientDrawable.Orientation.TL_BR
+                colors = intArrayOf(0xFF16A085.toInt(), 0xFF2DD4BF.toInt())
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, 42f, 42f, 42f, 42f)
+            }
+        }
+        hero.addView(TextView(this).apply {
+            text = "🎓  每日学习突击"
+            textSize = 27f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        })
+        hero.addView(TextView(this).apply {
+            text = "⏳  今日待突击"
+            textSize = 34f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(0, 24, 0, 8)
+        })
+        hero.addView(TextView(this).apply {
+            text = "学习时段 08:00–21:00，已连续坚持 ${prefs.getInt("streak", 0)} 天"
+            textSize = 15f
+            setTextColor(0xFFE6FFFB.toInt())
+        })
+        hero.addView(TextView(this).apply {
+            text = "🔥 今日计划 ${prefs.getInt("done", 0)} 次检查，下一次随机提醒"
+            textSize = 14f
+            setTextColor(0xFFE6FFFB.toInt())
+            setPadding(0, 16, 0, 0)
+        })
+        hero.addView(makeWhiteButton("📷  开始突击检查") { showCheck() })
+        content.addView(hero)
+
+        val stats = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(pad, 24, pad, 8)
+        }
+        stats.addView(makeStat("🔥", "${prefs.getInt("streak", 0)}", "连续坚持", 0xFFFFE8D8.toInt(), 0xFFF97316.toInt()))
+        stats.addView(makeStat("🛡️", "${accuracy()}%", "检查通过率", 0xFFDFF8F1.toInt(), COLOR_TEAL))
+        stats.addView(makeStat("📚", "${entries.size}", "词库单词", 0xFFE7E6FF.toInt(), 0xFF6366F1.toInt()))
+        content.addView(stats)
+
+        content.addView(makeSectionTitle("今日学习计划", pad))
+        val plan = makeCard(pad)
+        plan.addView(makePlanRow("🕐", "学习时段", "08:00 – 21:00"))
+        plan.addView(makePlanRow("⚡", "今日突击次数", "${prefs.getInt("interval_min", 25)} 分钟随机"))
+        plan.addView(makePlanRow("▤", "当前单词范围", "第 ${prefs.getInt("pageStart", 1)}-${prefs.getInt("pageEnd", 20)} 页"))
+        plan.addView(makePlanRow("🔔", "本地提醒", if (notificationsEnabled()) "已开启" else "未开启"))
+        content.addView(plan)
+
+        content.addView(makeSectionTitle("快捷入口", pad))
+        val links = makeCard(pad)
+        links.addView(makeLinkRow("▤", "查看词库", "单词、短语、句子和中文意思") { showPage("vocab") })
+        links.addView(makeLinkRow("◷", "查看学习档案", "回顾每日检查与答题明细") { showPage("archive") })
+        links.addView(makeLinkRow("⚙", "学习设置", "页码范围与突击间隔") { showPage("settings") })
+        content.addView(links)
+
+        content.addView(TextView(this).apply {
+            text = "已完成检查 ${prefs.getInt("done", 0)} 次 · 正确 ${prefs.getInt("good", 0)} 次"
+            textSize = 13f
+            setTextColor(COLOR_MUTED)
+            setPadding(pad, 24, pad, 40)
+        })
+    }
+
+    private fun accuracy(): Int {
+        val done = prefs.getInt("done", 0)
+        val good = prefs.getInt("good", 0)
+        return if (done == 0) 0 else good * 100 / done
+    }
+
+    private fun notificationsEnabled(): Boolean {
+        return Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun makeStat(icon: String, value: String, label: String, bg: Int, fg: Int): LinearLayout {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            elevation = 4f
-            setPadding(32, 26, 32, 30)
+            setPadding(24, 24, 24, 24)
             background = GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadius = 22f
+                setColor(COLOR_CARD)
+                cornerRadius = 26f
+            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, 14, 0)
             }
         }
         card.addView(TextView(this).apply {
-            text = title
-            textSize = 19f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF153F31.toInt())
-            setPadding(0, 0, 0, 14)
+            text = icon
+            textSize = 23f
+            background = GradientDrawable().apply {
+                setColor(bg)
+                cornerRadius = 18f
+            }
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(54, 54)
         })
-        val params = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        params.bottomMargin = 18
-        card.layoutParams = params
+        card.addView(TextView(this).apply {
+            text = value
+            textSize = 28f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(0, 16, 0, 0)
+        })
+        card.addView(TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(COLOR_MUTED)
+            setPadding(0, 4, 0, 0)
+        })
         return card
     }
 
-    private fun makeLabel(text: String): TextView {
+    private fun makeSectionTitle(text: String, pad: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            textSize = 13f
+            textSize = 20f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF52645B.toInt())
-            setPadding(0, 16, 0, 6)
+            setTextColor(Color.WHITE)
+            setPadding(pad, 28, pad, 12)
         }
     }
 
-    private fun makeStaticText(text: String): TextView {
-        return TextView(this).apply {
-            this.text = text
-            textSize = 15f
-            setTextColor(0xFF25352E.toInt())
-            setPadding(0, 0, 0, 6)
-        }
-    }
-
-    private fun makeInput(hint: String): EditText {
-        return EditText(this).apply {
-            this.hint = hint
-            setPadding(24, 18, 24, 18)
+    private fun makeCard(pad: Int): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad + 4, 12, pad + 4, 16)
             background = GradientDrawable().apply {
-                setColor(0xFFF7FAF8.toInt())
-                setStroke(2, 0xFFDDE8E2.toInt())
+                setColor(COLOR_CARD)
+                cornerRadius = 28f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(pad, 0, pad, 0) }
+        }
+    }
+
+    private fun makePlanRow(icon: String, title: String, value: String): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(8, 18, 8, 18)
+        }
+        row.addView(TextView(this).apply {
+            text = icon
+            textSize = 22f
+            background = GradientDrawable().apply {
+                setColor(0xFF176B62.toInt())
+                cornerRadius = 16f
+            }
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(52, 52)
+        })
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 13f
+                setTextColor(COLOR_MUTED)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = value
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                setPadding(0, 4, 0, 0)
+            })
+        })
+        return row
+    }
+
+    private fun makeLinkRow(icon: String, title: String, sub: String, action: () -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(8, 20, 8, 20)
+            setOnClickListener { action() }
+        }
+        row.addView(TextView(this).apply {
+            text = icon
+            textSize = 24f
+            background = GradientDrawable().apply {
+                setColor(0xFF176B62.toInt())
                 cornerRadius = 18f
             }
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(56, 56)
+        })
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = sub
+                textSize = 13f
+                setTextColor(COLOR_MUTED)
+                setPadding(0, 4, 0, 0)
+            })
+        })
+        row.addView(TextView(this).apply {
+            text = "›"
+            textSize = 28f
+            setTextColor(COLOR_MUTED)
+            gravity = Gravity.CENTER_VERTICAL
+        })
+        return row
+    }
+
+    private fun makeWhiteButton(text: String, action: () -> Unit): Button {
+        return Button(this).apply {
+            this.text = text
+            setAllCaps(false)
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFF14B8A6.toInt())
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = 24f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 30 }
+            setOnClickListener { action() }
         }
     }
 
-    private fun makeButton(text: String, action: () -> Unit): Button {
+    private fun buildVocab() {
+        val pad = 32
+        content.addView(TextView(this).apply {
+            text = "词库"
+            textSize = 30f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(pad, 44, pad, 4)
+        })
+        content.addView(TextView(this).apply {
+            text = "第 ${prefs.getInt("pageStart", 1)}-${prefs.getInt("pageEnd", 20)} 页 · ${entries.size} 词"
+            textSize = 14f
+            setTextColor(COLOR_MUTED)
+            setPadding(pad, 0, pad, 20)
+        })
+
+        val search = EditText(this).apply {
+            hint = "搜索单词..."
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF7FA7AD.toInt())
+            background = GradientDrawable().apply {
+                setColor(COLOR_CARD)
+                cornerRadius = 24f
+                setStroke(2, 0xFF1D4758.toInt())
+            }
+            setPadding(30, 20, 30, 20)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(pad, 0, pad, 0) }
+        }
+        content.addView(search)
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(pad, 18, pad, 8)
+        }
+        actions.addView(makeTealButton("导入图片") { pickWordPhotos.launch("image/*") })
+        actions.addView(makeTealButton("添加单词") { showAddDialog() })
+        content.addView(actions)
+
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, 8, pad, 40)
+        }
+        content.addView(list)
+
+        fun render() {
+            list.removeAllViews()
+            val q = search.text.toString().trim().lowercase()
+            val filtered = entries.filter { q.isEmpty() || it.word.contains(q) || it.meaning.contains(q) }
+            if (filtered.isEmpty()) {
+                list.addView(TextView(this).apply {
+                    text = if (entries.isEmpty()) "还没有单词，点击“导入图片”开始。" else "没有找到匹配的单词。"
+                    textSize = 15f
+                    setTextColor(COLOR_MUTED)
+                    setPadding(0, 36, 0, 0)
+                    gravity = Gravity.CENTER
+                })
+                return
+            }
+            filtered.forEachIndexed { i, e -> list.addView(buildWordCard(i + 1, e, ::render)) }
+        }
+
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { render() }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+        render()
+    }
+
+    private fun makeTealButton(text: String, action: () -> Unit): Button {
         return Button(this).apply {
             this.text = text
             setAllCaps(false)
             textSize = 15f
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                setColor(0xFF176B4D.toInt())
+                setColor(COLOR_TEAL)
                 cornerRadius = 18f
             }
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            lp.topMargin = 14
-            layoutParams = lp
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, 12, 0)
+            }
             setOnClickListener { action() }
         }
     }
 
-    private fun allWords(): List<String> {
-        return (prefs.getStringSet("words", emptySet()) ?: emptySet())
-            .map { it.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .sorted()
+    private fun buildWordCard(index: Int, entry: VocabEntry, rerender: () -> Unit): LinearLayout {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(26, 22, 26, 22)
+            background = GradientDrawable().apply {
+                setColor(COLOR_CARD)
+                cornerRadius = 26f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 14 }
+        }
+
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        top.addView(TextView(this).apply {
+            text = index.toString()
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(COLOR_TEAL)
+                cornerRadius = 18f
+            }
+            layoutParams = LinearLayout.LayoutParams(62, 62)
+        })
+        top.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = entry.word
+                textSize = 20f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = entry.meaning
+                textSize = 15f
+                setTextColor(COLOR_MUTED)
+                setPadding(0, 4, 0, 0)
+            })
+        })
+        card.addView(top)
+
+        card.addView(TextView(this).apply {
+            text = "短语：${entry.phrase}\n中文：${entry.phraseMeaning}"
+            textSize = 14f
+            setTextColor(0xFFD5E7E5.toInt())
+            setPadding(0, 16, 0, 0)
+        })
+        card.addView(TextView(this).apply {
+            text = "句子：${entry.sentence}\n中文：${entry.sentenceMeaning}"
+            textSize = 14f
+            setTextColor(0xFFD5E7E5.toInt())
+            setPadding(0, 10, 0, 0)
+        })
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, 14, 0, 0)
+        }
+        actions.addView(makeSmallButton("编辑") { showEditDialog(entry, rerender) })
+        actions.addView(makeSmallButton("删除") {
+            entries.removeAll { it.word == entry.word }
+            saveEntries()
+            rerender()
+        })
+        card.addView(actions)
+        return card
     }
 
-    private fun addWords(raw: String) {
-        val newWords = raw.split(Regex("[^A-Za-z']+"))
-            .map { it.trim('\'').lowercase() }
-            .filter { it.length > 1 }
-        if (newWords.isEmpty()) {
-            Toast.makeText(this, "没有识别到英文单词", Toast.LENGTH_SHORT).show()
+    private fun makeSmallButton(text: String, action: () -> Unit): Button {
+        return Button(this).apply {
+            this.text = text
+            setAllCaps(false)
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(if (text == "删除") 0xFFB45353.toInt() else 0xFF1F6F7A.toInt())
+                cornerRadius = 14f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(10, 0, 0, 0) }
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun buildArchive() {
+        val pad = 32
+        content.addView(TextView(this).apply {
+            text = "学习档案"
+            textSize = 30f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(pad, 44, pad, 20)
+        })
+
+        val records = loadRecords()
+        if (records.isEmpty()) {
+            content.addView(TextView(this).apply {
+                text = "还没有检查记录，先完成一次突击检查。"
+                textSize = 15f
+                setTextColor(COLOR_MUTED)
+                setPadding(pad, 40, pad, 40)
+                gravity = Gravity.CENTER
+            })
             return
         }
-        val words = allWords().toMutableSet()
-        words.addAll(newWords)
-        prefs.edit().putStringSet("words", words).apply()
-        refreshWordUi()
-        Toast.makeText(this, "已添加 ${newWords.size} 个单词", Toast.LENGTH_SHORT).show()
-    }
 
-    private fun loadScaledBitmap(uri: Uri): Bitmap {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: throw IOException("无法读取图片")
-
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= 1600 ||
-            bounds.outHeight / (sample * 2) >= 1600
-        ) {
-            sample *= 2
+        records.forEach { record ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(28, 24, 28, 24)
+                background = GradientDrawable().apply {
+                    setColor(COLOR_CARD)
+                    cornerRadius = 24f
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(pad, 0, pad, 14) }
+            }
+            card.addView(TextView(this).apply {
+                text = if (record.second) "✓ 通过" else "× 需要复习"
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(if (record.second) 0xFF5EEAD4.toInt() else 0xFFFCA5A5.toInt())
+            })
+            card.addView(TextView(this).apply {
+                text = record.first
+                textSize = 14f
+                setTextColor(COLOR_MUTED)
+                setPadding(0, 8, 0, 0)
+            })
+            content.addView(card)
         }
-
-        val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, options)
-        } ?: throw IOException("无法解码图片")
     }
 
-    private fun recognizeWords(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        Toast.makeText(this, "正在逐张识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+    private fun buildSettings() {
+        val pad = 32
+        content.addView(TextView(this).apply {
+            text = "设置"
+            textSize = 30f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(pad, 44, pad, 20)
+        })
 
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val card = makeCard(pad)
+        card.addView(settingLabel("英语教材"))
+        card.addView(settingStatic("刘晓燕《英语四级你还在背单词吗》"))
+        card.addView(settingLabel("出题页码范围"))
+        val pages = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val start = settingInput(prefs.getInt("pageStart", 1).toString())
+        val end = settingInput(prefs.getInt("pageEnd", 20).toString())
+        pages.addView(start, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        pages.addView(end, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(pages)
+
+        card.addView(settingLabel("突击间隔（分钟）"))
+        val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val min = settingInput(prefs.getInt("interval_min", 25).toString())
+        val max = settingInput(prefs.getInt("interval_max", 45).toString())
+        times.addView(min, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        times.addView(max, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(times)
+
+        card.addView(makeTealButton("保存设置") {
+            val minV = min.text.toString().toIntOrNull() ?: 25
+            val maxV = max.text.toString().toIntOrNull() ?: 45
+            prefs.edit()
+                .putInt("pageStart", start.text.toString().toIntOrNull() ?: 1)
+                .putInt("pageEnd", end.text.toString().toIntOrNull() ?: 20)
+                .putInt("interval_min", minV.coerceAtLeast(1))
+                .putInt("interval_max", maxV.coerceAtLeast(minV))
+                .apply()
+            Scheduler.scheduleNext(this)
+            Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
+        })
+
+        card.addView(makeTealButton("开启通知提醒") {
+            if (Build.VERSION.SDK_INT >= 33 && !notificationsEnabled()) {
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                Scheduler.ensureScheduled(this)
+                Toast.makeText(this, "提醒已开启", Toast.LENGTH_SHORT).show()
+            }
+        })
+        content.addView(card)
+    }
+
+    private fun settingLabel(text: String): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(COLOR_MUTED)
+            setPadding(0, 16, 0, 6)
+        }
+    }
+
+    private fun settingStatic(text: String): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 15f
+            setTextColor(Color.WHITE)
+        }
+    }
+
+    private fun settingInput(value: String): EditText {
+        return EditText(this).apply {
+            setText(value)
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setTextColor(Color.WHITE)
+            setHintTextColor(COLOR_MUTED)
+            background = GradientDrawable().apply {
+                setColor(0xFF0B2233.toInt())
+                cornerRadius = 16f
+                setStroke(2, 0xFF1D4758.toInt())
+            }
+            setPadding(22, 18, 22, 18)
+        }
+    }
+
+    private fun showAddDialog() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 12)
+        }
+        val word = EditText(this).apply { hint = "英文单词" }
+        val meaning = EditText(this).apply { hint = "中文意思" }
+        layout.addView(word)
+        layout.addView(meaning)
+        AlertDialog.Builder(this)
+            .setTitle("添加单词")
+            .setView(layout)
+            .setPositiveButton("保存") { _, _ ->
+                val w = word.text.toString().trim().lowercase()
+                val m = meaning.text.toString().trim()
+                if (w.isNotEmpty()) addEntry(w, m.ifEmpty { meaningFor(w) })
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showEditDialog(entry: VocabEntry, rerender: () -> Unit) {
+        val input = EditText(this).apply { setText(entry.meaning) }
+        AlertDialog.Builder(this)
+            .setTitle("编辑 ${entry.word}")
+            .setView(input)
+            .setPositiveButton("保存") { _, _ ->
+                val m = input.text.toString().trim()
+                if (m.isNotEmpty()) {
+                    val i = entries.indexOfFirst { it.word == entry.word }
+                    if (i >= 0) entries[i] = entry.copy(meaning = m)
+                    saveEntries()
+                    rerender()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun meaningFor(word: String) = MEANINGS[word] ?: "待补充中文意思"
+
+    private fun phraseFor(word: String) = when {
+        word.endsWith("ing") -> "keep $word"
+        word.endsWith("ed") -> "already $word"
+        else -> "my $word"
+    }
+
+    private fun sentenceFor(word: String) = when {
+        word.endsWith("ing") -> "I am $word now."
+        word.endsWith("ed") -> "I $word today."
+        else -> "I $word every day."
+    }
+
+    private fun makeEntry(word: String, meaning: String): VocabEntry {
+        val phrase = phraseFor(word)
+        val sentence = sentenceFor(word)
+        return VocabEntry(
+            word,
+            meaning,
+            phrase,
+            "与“$meaning”相关",
+            sentence,
+            "我每天${meaning}。"
+        )
+    }
+
+    private fun addEntry(word: String, meaning: String) {
+        if (entries.any { it.word == word }) return
+        entries.add(makeEntry(word, meaning))
+        saveEntries()
+    }
+
+    private fun saveEntries() {
+        val array = JSONArray()
+        entries.forEach { e ->
+            val o = JSONObject()
+            o.put("word", e.word); o.put("meaning", e.meaning)
+            o.put("phrase", e.phrase); o.put("phraseMeaning", e.phraseMeaning)
+            o.put("sentence", e.sentence); o.put("sentenceMeaning", e.sentenceMeaning)
+            array.put(o)
+        }
+        prefs.edit().putString("vocab_json", array.toString()).apply()
+    }
+
+    private fun loadEntries(): MutableList<VocabEntry> {
+        val result = mutableListOf<VocabEntry>()
+        val json = prefs.getString("vocab_json", null)
+        if (json != null) {
+            try {
+                val array = JSONArray(json)
+                for (i in 0 until array.length()) {
+                    val o = array.getJSONObject(i)
+                    result.add(
+                        VocabEntry(
+                            o.optString("word"),
+                            o.optString("meaning", "待补充中文意思"),
+                            o.optString("phrase"),
+                            o.optString("phraseMeaning"),
+                            o.optString("sentence"),
+                            o.optString("sentenceMeaning")
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+            }
+        }
+        if (result.isEmpty()) {
+            (prefs.getStringSet("words", emptySet()) ?: emptySet()).forEach {
+                result.add(makeEntry(it, meaningFor(it)))
+            }
+        }
+        return result
+    }
+
+    private fun loadRecords(): List<Pair<String, Boolean>> {
+        val json = prefs.getString("records_json", "[]") ?: "[]"
+        val list = mutableListOf<Pair<String, Boolean>>()
+        try {
+            val array = JSONArray(json)
+            for (i in 0 until array.length()) {
+                val o = array.getJSONObject(i)
+                list.add(o.optString("time") to o.optBoolean("ok"))
+            }
+        } catch (e: Exception) {
+        }
+        return list
+    }
+
+    private fun saveRecord(ok: Boolean) {
+        val array = JSONArray()
+        loadRecords().forEach { (time, good) ->
+            val o = JSONObject(); o.put("time", time); o.put("good", good); array.put(o)
+        }
+        val o = JSONObject()
+        o.put("time", SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date()))
+        o.put("good", ok)
+        array.put(o)
+        prefs.edit().putString("records_json", array.toString()).apply()
+    }
+
+    private fun importImages(uris: List<Uri>) {
+        Toast.makeText(this, "正在逐张识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         val queue = ArrayDeque(uris)
 
-        fun processNext() {
+        fun next() {
             if (queue.isEmpty()) {
                 recognizer.close()
-                Toast.makeText(this, "图片识别完成", Toast.LENGTH_SHORT).show()
-                refreshWordUi()
+                saveEntries()
+                showPage("vocab")
+                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
                 return
             }
-
             val uri = queue.removeFirst()
             try {
                 val bitmap = loadScaledBitmap(uri)
                 val image = InputImage.fromBitmap(bitmap, 0)
                 recognizer.process(image)
                     .addOnSuccessListener { result ->
-                        val found = result.text
-                            .split(Regex("[^A-Za-z']+"))
-                            .map { it.trim('\'').lowercase() }
-                            .filter { it.length > 1 }
-                        addWords(found.joinToString(", "))
+                        val lines = result.text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                        var pending: String? = null
+                        lines.forEach { line ->
+                            val en = Regex("[A-Za-z]{2,}").find(line)?.value?.lowercase()
+                            val zh = Regex("[\\u4e00-\\u9fff]+").find(line)?.value
+                            if (en != null && zh != null) {
+                                addEntry(en, zh); pending = null
+                            } else if (en != null) {
+                                pending = en
+                            } else if (zh != null && pending != null) {
+                                addEntry(pending!!, zh); pending = null
+                            }
+                        }
                     }
                     .addOnCompleteListener {
                         bitmap.recycle()
-                        processNext()
+                        next()
                     }
             } catch (e: Exception) {
-                processNext()
+                next()
             }
         }
-
-        processNext()
+        next()
     }
 
-    private fun meaningFor(word: String): String {
-        return MEANINGS[word] ?: "待补充中文意思"
-    }
-
-    private fun phraseFor(word: String): String {
-        return when {
-            word.endsWith("ing") -> "keep $word"
-            word.endsWith("ed") -> "already $word"
-            word.length > 8 -> "practice $word"
-            else -> "my $word"
-        }
-    }
-
-    private fun sentenceFor(word: String): String {
-        return when {
-            word.endsWith("ing") -> "I am $word now."
-            word.endsWith("ed") -> "I $word today."
-            word in setOf("book", "word", "sentence", "phrase", "knowledge", "goal", "plan") ->
-                "This is my $word."
-            else -> "I $word every day."
-        }
-    }
-
-    private fun formattedWordList(words: List<String>): CharSequence {
-        val builder = SpannableStringBuilder()
-        words.forEachIndexed { index, word ->
-            if (index > 0) builder.append("\n\n")
-            val start = builder.length
-            builder.append(word)
-            builder.setSpan(
-                StyleSpan(Typeface.BOLD),
-                start,
-                builder.length,
-                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            builder.setSpan(
-                ForegroundColorSpan(0xFF176B4D.toInt()),
-                start,
-                builder.length,
-                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            builder.append("\n短语  ").append(phraseFor(word))
-            builder.append("\n句子  ").append(sentenceFor(word))
-            builder.append("\n中文  ").append(meaningFor(word))
-        }
-        return builder
-    }
-
-    private fun refreshWordUi() {
-        val words = allWords()
-        wordCountText.text = "已上传单词：${words.size} 个"
-        wordPreview.text = if (words.isEmpty()) {
-            "还没有单词，先手动输入或拍照上传。"
-        } else {
-            formattedWordList(words)
-        }
-
-        val generated = words.take(30).joinToString("\n") {
-            "${it}  |  ${phraseFor(it)}  |  ${sentenceFor(it)}  |  ${meaningFor(it)}"
-        }
-        generatedPreview.text = if (words.isEmpty()) {
-            "还没有生成内容，先上传单词。"
-        } else {
-            generated
-        }
+    private fun loadScaledBitmap(uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            ?: throw IOException("无法读取图片")
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 1600 || bounds.outHeight / (sample * 2) >= 1600) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        } ?: throw IOException("无法解码图片")
     }
 
     private fun randomQuestion(): Question {
-        val words = allWords()
+        val words = entries.map { it.word }.distinct()
         if (words.size >= 4) {
             val answer = words.random()
             val options = (listOf(answer) + words.filter { it != answer }.shuffled().take(3)).shuffled()
-            val phrase = phraseFor(answer)
-            return Question(
-                "选择与 “$answer” 搭配最自然的短语：\n$phrase",
-                options.map { phraseFor(it) },
-                options.indexOf(answer),
-                "英语搭配"
-            )
+            return Question("选择与 “$answer” 搭配最自然的短语：\n${phraseFor(answer)}",
+                options.map { phraseFor(it) }, options.indexOf(answer))
         }
-
-        return Question(
-            "请先在“上传英语单词”中添加至少 4 个单词。",
-            listOf("返回添加单词", "稍后再试", "继续", "退出"),
-            0,
-            "提示"
-        )
+        return Question("请先导入至少 4 个单词。", listOf("去词库", "稍后再试", "继续", "退出"), 0)
     }
 
     private fun showCheck() {
         currentQuestion = randomQuestion()
         photoSelected = false
-
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 12)
         }
-
         layout.addView(TextView(this).apply {
             text = currentQuestion?.text
             textSize = 18f
@@ -658,43 +1081,29 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF153F31.toInt())
             setPadding(0, 8, 0, 18)
         })
-
         val options = RadioGroup(this)
-        currentQuestion?.options?.forEachIndexed { index, option ->
+        currentQuestion?.options?.forEachIndexed { i, o ->
             options.addView(RadioButton(this).apply {
-                text = option
-                id = View.generateViewId()
-                tag = index
-                setPadding(14, 14, 14, 14)
+                text = o; id = View.generateViewId(); tag = i; setPadding(14, 14, 14, 14)
             })
         }
         layout.addView(options)
 
         val preview = ImageView(this).apply {
-            visibility = View.GONE
-            adjustViewBounds = true
-            maxHeight = 600
-            setPadding(0, 16, 0, 8)
+            visibility = View.GONE; adjustViewBounds = true; maxHeight = 600
         }
         photoPreview = preview
-
         layout.addView(Button(this).apply {
             text = "拍照 / 选择学习证明"
             setOnClickListener {
                 val camera = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
-                if (camera.resolveActivity(packageManager) != null) {
-                    takeProof.launch(camera)
-                } else {
-                    pickProof.launch("image/*")
-                }
+                if (camera.resolveActivity(packageManager) != null) takeProof.launch(camera)
+                else pickProof.launch("image/*")
             }
         })
         layout.addView(preview)
 
-        val result = TextView(this).apply {
-            visibility = View.GONE
-            setPadding(0, 12, 0, 0)
-        }
+        val result = TextView(this).apply { visibility = View.GONE }
         layout.addView(result)
 
         val dialog = AlertDialog.Builder(this)
@@ -706,37 +1115,29 @@ class MainActivity : AppCompatActivity() {
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val selectedId = options.checkedRadioButtonId
+                val id = options.checkedRadioButtonId
                 if (!photoSelected) {
-                    result.visibility = View.VISIBLE
-                    result.setTextColor(0xFFB54242.toInt())
-                    result.text = "请先上传一张学习现场照片。"
-                    return@setOnClickListener
+                    result.visibility = View.VISIBLE; result.setTextColor(0xFFB54242.toInt())
+                    result.text = "请先上传学习现场照片。"; return@setOnClickListener
                 }
-                if (selectedId == -1) {
-                    result.visibility = View.VISIBLE
-                    result.setTextColor(0xFFB54242.toInt())
-                    result.text = "请先选择一个答案。"
-                    return@setOnClickListener
+                if (id == -1) {
+                    result.visibility = View.VISIBLE; result.setTextColor(0xFFB54242.toInt())
+                    result.text = "请先选择答案。"; return@setOnClickListener
                 }
-
-                val selected = options.findViewById<RadioButton>(selectedId)
-                val index = selected.tag as Int
-                val correct = index == currentQuestion?.answer
+                val selected = options.findViewById<RadioButton>(id)
+                val correct = (selected.tag as Int) == currentQuestion?.answer
                 val done = prefs.getInt("done", 0) + 1
                 val good = prefs.getInt("good", 0) + if (correct) 1 else 0
-                prefs.edit().putInt("done", done).putInt("good", good).apply()
-
+                prefs.edit().putInt("done", done).putInt("good", good)
+                    .putInt("streak", if (correct) prefs.getInt("streak", 0) + 1 else 0)
+                    .apply()
+                saveRecord(correct)
                 result.visibility = View.VISIBLE
                 result.setTextColor(if (correct) 0xFF176B4D.toInt() else 0xFFB54242.toInt())
-                result.text = if (correct) "证明提交成功，回答正确！"
-                else "照片已记录，这道题还需要复习。"
-
-                updateStatus()
+                result.text = if (correct) "证明提交成功，回答正确！" else "照片已记录，这道题还需要复习。"
                 window.decorView.postDelayed({ dialog.dismiss() }, 1200L)
             }
         }
-
         dialog.show()
     }
 }
