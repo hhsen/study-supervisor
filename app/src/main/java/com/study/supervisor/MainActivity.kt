@@ -799,8 +799,6 @@ class MainActivity : AppCompatActivity() {
             val minV = min.text.toString().toIntOrNull() ?: 25
             val maxV = max.text.toString().toIntOrNull() ?: 45
             prefs.edit()
-                .putInt("pageStart", start.text.toString().toIntOrNull() ?: 1)
-                .putInt("pageEnd", end.text.toString().toIntOrNull() ?: 20)
                 .putInt("interval_min", minV.coerceAtLeast(1))
                 .putInt("interval_max", maxV.coerceAtLeast(minV))
                 .apply()
