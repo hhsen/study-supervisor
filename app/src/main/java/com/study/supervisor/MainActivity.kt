@@ -8,13 +8,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
-import android.view.Gravity
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.View
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,10 +28,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
-import com.google.android.material.card.MaterialCardView
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -134,11 +138,16 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_OPEN_CHECK = "open_check"
-        private val BASIC_WORDS = setOf(
-            "i", "you", "he", "she", "we", "they", "it",
-            "a", "the", "is", "am", "are", "can", "do",
-            "and", "or", "to", "of", "in", "on", "with",
-            "my", "your", "this", "that", "not", "so"
+
+        private val MEANINGS = mapOf(
+            "study" to "学习", "book" to "书", "word" to "单词", "sentence" to "句子",
+            "phrase" to "短语", "knowledge" to "知识", "focus" to "专注", "review" to "复习",
+            "persist" to "坚持", "allocate" to "分配", "achieve" to "实现", "effort" to "努力",
+            "progress" to "进步", "practice" to "练习", "remember" to "记住", "understand" to "理解",
+            "english" to "英语", "learn" to "学习", "reading" to "阅读", "writing" to "写作",
+            "listen" to "听", "speak" to "说", "daily" to "每天的", "important" to "重要的",
+            "difficult" to "困难的", "success" to "成功", "goal" to "目标", "plan" to "计划",
+            "time" to "时间", "day" to "天", "night" to "晚上", "morning" to "早上"
         )
     }
 
@@ -214,11 +223,11 @@ class MainActivity : AppCompatActivity() {
         root.addView(TextView(this).apply {
             text = "英语自习监督员"
             textSize = 30f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(0xFF153F31.toInt())
         })
         root.addView(TextView(this).apply {
-            text = "上传单词 · 生成句子 · 突击检查"
+            text = "上传单词 · 生成短语句子 · 突击检查"
             textSize = 14f
             setTextColor(0xFF68756E.toInt())
             setPadding(0, 6, 0, 24)
@@ -227,7 +236,7 @@ class MainActivity : AppCompatActivity() {
         val statusCard = makeCard("今日状态")
         statusText = TextView(this).apply {
             textSize = 20f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(0xFF176B4D.toInt())
         }
         statusCard.addView(statusText)
@@ -242,8 +251,8 @@ class MainActivity : AppCompatActivity() {
         val rangeCard = makeCard("英语学习范围")
         rangeCard.addView(makeLabel("教材"))
         rangeCard.addView(makeStaticText("刘晓燕《英语四级你还在背单词吗》"))
-
         rangeCard.addView(makeLabel("出题页码范围"))
+
         val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val pageStart = makeInput("起始页").apply {
             setText(prefs.getInt("pageStart", 1).toString())
@@ -294,12 +303,11 @@ class MainActivity : AppCompatActivity() {
             addWords(manualWords.text.toString())
             manualWords.text?.clear()
         })
-
         wordCard.addView(makeButton("拍照 / 选择多张单词图片") {
             pickWordPhotos.launch("image/*")
         })
         wordCard.addView(TextView(this).apply {
-            text = "可以连续选择任意张图片，系统会自动识别其中的英文单词。"
+            text = "图片会逐张识别，避免一次处理太多导致闪退。"
             textSize = 12f
             setTextColor(0xFF68756E.toInt())
             setPadding(0, 8, 0, 8)
@@ -307,7 +315,7 @@ class MainActivity : AppCompatActivity() {
 
         wordCountText = TextView(this).apply {
             textSize = 15f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(0xFF176B4D.toInt())
             setPadding(0, 10, 0, 6)
         }
@@ -315,21 +323,23 @@ class MainActivity : AppCompatActivity() {
 
         wordPreview = TextView(this).apply {
             textSize = 14f
-            setTextColor(0xFF33443C.toInt())
+            setTextColor(0xFF25352E.toInt())
             setPadding(0, 4, 0, 8)
+            setBackgroundColor(0xFFF7FAF8.toInt())
         }
         wordCard.addView(wordPreview)
         root.addView(wordCard)
 
-        val generateCard = makeCard("生成短语和句子")
+        val generateCard = makeCard("短语和句子")
         generateCard.addView(TextView(this).apply {
-            text = "句子只使用基础语法词和你上传的单词，避免加入未上传的生词。"
+            text = "每个单词一行，附带短语、句子和中文意思。"
             textSize = 13f
             setTextColor(0xFF68756E.toInt())
             setPadding(0, 0, 0, 12)
         })
-        generateCard.addView(makeButton("生成学习内容") {
-            generateItems()
+        generateCard.addView(makeButton("刷新学习内容") {
+            refreshWordUi()
+            Toast.makeText(this, "学习内容已刷新", Toast.LENGTH_SHORT).show()
         })
         generatedPreview = TextView(this).apply {
             textSize = 15f
@@ -384,38 +394,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun makeCard(title: String): LinearLayout {
-    val card = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        elevation = 4f
-        setPadding(32, 26, 32, 30)
-        background = GradientDrawable().apply {
-            setColor(Color.WHITE)
-            cornerRadius = 22f
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            elevation = 4f
+            setPadding(32, 26, 32, 30)
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = 22f
+            }
         }
+        card.addView(TextView(this).apply {
+            text = title
+            textSize = 19f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFF153F31.toInt())
+            setPadding(0, 0, 0, 14)
+        })
+        val params = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        params.bottomMargin = 18
+        card.layoutParams = params
+        return card
     }
-
-    card.addView(TextView(this).apply {
-        text = title
-        textSize = 19f
-        setTypeface(null, android.graphics.Typeface.BOLD)
-        setTextColor(0xFF153F31.toInt())
-        setPadding(0, 0, 0, 14)
-    })
-
-    val params = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT
-    )
-    params.bottomMargin = 18
-    card.layoutParams = params
-    return card
-}
 
     private fun makeLabel(text: String): TextView {
         return TextView(this).apply {
             this.text = text
             textSize = 13f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(0xFF52645B.toInt())
             setPadding(0, 16, 0, 6)
         }
@@ -485,14 +493,43 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "已添加 ${newWords.size} 个单词", Toast.LENGTH_SHORT).show()
     }
 
-    private fun recognizeWords(uris: List<Uri>) {
-        Toast.makeText(this, "正在识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        var remaining = uris.size
+    private fun loadScaledBitmap(uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            ?: throw IOException("无法读取图片")
 
-        uris.forEach { uri ->
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 1600 ||
+            bounds.outHeight / (sample * 2) >= 1600
+        ) {
+            sample *= 2
+        }
+
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        } ?: throw IOException("无法解码图片")
+    }
+
+    private fun recognizeWords(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在逐张识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val queue = ArrayDeque(uris)
+
+        fun processNext() {
+            if (queue.isEmpty()) {
+                recognizer.close()
+                Toast.makeText(this, "图片识别完成", Toast.LENGTH_SHORT).show()
+                refreshWordUi()
+                return
+            }
+
+            val uri = queue.removeFirst()
             try {
-                val image = InputImage.fromFilePath(this, uri)
+                val bitmap = loadScaledBitmap(uri)
+                val image = InputImage.fromBitmap(bitmap, 0)
                 recognizer.process(image)
                     .addOnSuccessListener { result ->
                         val found = result.text
@@ -502,18 +539,63 @@ class MainActivity : AppCompatActivity() {
                         addWords(found.joinToString(", "))
                     }
                     .addOnCompleteListener {
-                        remaining--
-                        if (remaining <= 0) {
-                            recognizer.close()
-                            Toast.makeText(this, "图片识别完成", Toast.LENGTH_SHORT).show()
-                        }
+                        bitmap.recycle()
+                        processNext()
                     }
             } catch (e: Exception) {
-                remaining--
-                if (remaining <= 0) recognizer.close()
-                Toast.makeText(this, "有一张图片无法读取", Toast.LENGTH_SHORT).show()
+                processNext()
             }
         }
+
+        processNext()
+    }
+
+    private fun meaningFor(word: String): String {
+        return MEANINGS[word] ?: "待补充中文意思"
+    }
+
+    private fun phraseFor(word: String): String {
+        return when {
+            word.endsWith("ing") -> "keep $word"
+            word.endsWith("ed") -> "already $word"
+            word.length > 8 -> "practice $word"
+            else -> "my $word"
+        }
+    }
+
+    private fun sentenceFor(word: String): String {
+        return when {
+            word.endsWith("ing") -> "I am $word now."
+            word.endsWith("ed") -> "I $word today."
+            word in setOf("book", "word", "sentence", "phrase", "knowledge", "goal", "plan") ->
+                "This is my $word."
+            else -> "I $word every day."
+        }
+    }
+
+    private fun formattedWordList(words: List<String>): CharSequence {
+        val builder = SpannableStringBuilder()
+        words.forEachIndexed { index, word ->
+            if (index > 0) builder.append("\n\n")
+            val start = builder.length
+            builder.append(word)
+            builder.setSpan(
+                StyleSpan(Typeface.BOLD),
+                start,
+                builder.length,
+                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            builder.setSpan(
+                ForegroundColorSpan(0xFF176B4D.toInt()),
+                start,
+                builder.length,
+                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            builder.append("\n短语  ").append(phraseFor(word))
+            builder.append("\n句子  ").append(sentenceFor(word))
+            builder.append("\n中文  ").append(meaningFor(word))
+        }
+        return builder
     }
 
     private fun refreshWordUi() {
@@ -522,77 +604,30 @@ class MainActivity : AppCompatActivity() {
         wordPreview.text = if (words.isEmpty()) {
             "还没有单词，先手动输入或拍照上传。"
         } else {
-            words.take(120).joinToString("  ·  ") +
-                if (words.size > 120) "\n\n还有 ${words.size - 120} 个单词..." else ""
+            formattedWordList(words)
         }
 
-        val items = (prefs.getStringSet("study_items", emptySet()) ?: emptySet()).toList()
-        generatedPreview.text = if (items.isEmpty()) {
-            "还没有生成内容，先上传单词再点击生成。"
+        val generated = words.take(30).joinToString("\n") {
+            "${it}  |  ${phraseFor(it)}  |  ${sentenceFor(it)}  |  ${meaningFor(it)}"
+        }
+        generatedPreview.text = if (words.isEmpty()) {
+            "还没有生成内容，先上传单词。"
         } else {
-            items.take(30).mapIndexed { index, item -> "${index + 1}. $item" }
-                .joinToString("\n") +
-                if (items.size > 30) "\n\n还有 ${items.size - 30} 条..." else ""
+            generated
         }
-    }
-
-    private fun generateItems() {
-        val words = allWords()
-        if (words.size < 2) {
-            Toast.makeText(this, "至少需要 2 个单词", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val items = linkedSetOf<String>()
-        val shuffled = words.shuffled()
-        for (i in shuffled.indices) {
-            val a = shuffled[i]
-            val b = shuffled[(i + 1) % shuffled.size]
-            val c = shuffled[(i + 2) % shuffled.size]
-
-            items.add("$a $b")
-            items.add("I can $a.")
-            items.add("$a is $b.")
-            items.add("This is my $a.")
-            items.add("$a and $b.")
-            items.add("I want $a and $b.")
-            items.add("$a, $b, $c.")
-            if (items.size >= 80) break
-        }
-
-        prefs.edit().putStringSet("study_items", items).apply()
-        refreshWordUi()
-        Toast.makeText(this, "已生成 ${items.size} 条学习内容", Toast.LENGTH_SHORT).show()
     }
 
     private fun randomQuestion(): Question {
         val words = allWords()
-        val items = (prefs.getStringSet("study_items", emptySet()) ?: emptySet()).toList()
-
-        if (words.size >= 4 && items.isNotEmpty()) {
-            val item = items.random()
-            val tokens = item.split(Regex("\\s+"))
-                .map { it.trim(',', '.', '?', '!') }
-                .filter { it.isNotBlank() && words.contains(it.lowercase()) }
-
-            if (tokens.isNotEmpty()) {
-                val answer = tokens.random()
-                val pattern = Regex("\\b" + Regex.escape(answer) + "\\b", RegexOption.IGNORE_CASE)
-                val blanked = pattern.replace(item, "_____")
-                val otherWords = words.filter { !answer.equals(it, ignoreCase = true) }.shuffled()
-                val options = (listOf(answer) + otherWords.take(3)).shuffled()
-                return Question(blanked, options, options.indexOf(answer), "英语词汇")
-            }
-        }
-
         if (words.size >= 4) {
             val answer = words.random()
             val options = (listOf(answer) + words.filter { it != answer }.shuffled().take(3)).shuffled()
+            val phrase = phraseFor(answer)
             return Question(
-                "选择正确的单词拼写：_____",
-                options,
+                "选择与 “$answer” 搭配最自然的短语：\n$phrase",
+                options.map { phraseFor(it) },
                 options.indexOf(answer),
-                "英语拼写"
+                "英语搭配"
             )
         }
 
@@ -615,8 +650,8 @@ class MainActivity : AppCompatActivity() {
 
         layout.addView(TextView(this).apply {
             text = currentQuestion?.text
-            textSize = 19f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
             setTextColor(0xFF153F31.toInt())
             setPadding(0, 8, 0, 18)
         })
