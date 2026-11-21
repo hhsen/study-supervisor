@@ -143,11 +143,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_OPEN_CHECK = "open_check"
-        private const val COLOR_BG = 0xFF0B1C2C
-        private const val COLOR_CARD = 0xFF102B3D
-        private const val COLOR_TEAL = 0xFF14B8A6
-        private const val COLOR_TEXT = 0xFFFFFFFF.toInt()
-        private const val COLOR_MUTED = 0xFFB8D8D4.toInt()
+        private val COLOR_BG = 0xFF0B1C2C.toInt()
+        private val COLOR_CARD = 0xFF102B3D.toInt()
+        private val COLOR_TEAL = 0xFF14B8A6.toInt()
+        private val COLOR_TEXT = 0xFFFFFFFF.toInt()
+        private val COLOR_MUTED = 0xFFB8D8D4.toInt().toInt()
 
         private val MEANINGS = mapOf(
             "study" to "学习", "book" to "书", "word" to "单词", "sentence" to "句子",
