@@ -364,6 +364,9 @@ class MainActivity : AppCompatActivity() {
         actionCard.addView(makeButton("立即突击检查") {
             showCheck()
         })
+        actionCard.addView(makeButton("打开词库") {
+            startActivity(Intent(this, VocabularyActivity::class.java))
+        })
         root.addView(actionCard)
 
         root.addView(TextView(this).apply {

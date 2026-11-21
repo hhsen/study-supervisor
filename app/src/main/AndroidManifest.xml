@@ -21,6 +21,8 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".VocabularyActivity" android:exported="false" />
+
         <receiver
             android:name=".BootReceiver"
             android:exported="false">
