@@ -352,7 +352,7 @@ class MainActivity : AppCompatActivity() {
         val plan = makeCard(pad)
         plan.addView(makePlanRow("🕐", "学习时段", "08:00 – 21:00"))
         plan.addView(makePlanRow("⚡", "今日突击次数", "${prefs.getInt("interval_min", 25)} 分钟随机"))
-        plan.addView(makePlanRow("▤", "当前单词范围", "第 ${prefs.getInt("pageStart", 1)}-${prefs.getInt("pageEnd", 20)} 页"))
+        
         plan.addView(makePlanRow("🔔", "本地提醒", if (notificationsEnabled()) "已开启" else "未开启"))
         content.addView(plan)
 
@@ -552,7 +552,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(pad, 44, pad, 4)
         })
         content.addView(TextView(this).apply {
-            text = "第 ${prefs.getInt("pageStart", 1)}-${prefs.getInt("pageEnd", 20)} 页 · ${entries.size} 词"
+            text = "${entries.size} 词"
             textSize = 14f
             setTextColor(COLOR_MUTED)
             setPadding(pad, 0, pad, 20)
@@ -787,14 +787,6 @@ class MainActivity : AppCompatActivity() {
         val card = makeCard(pad)
         card.addView(settingLabel("英语教材"))
         card.addView(settingStatic("刘晓燕《英语四级你还在背单词吗》"))
-        card.addView(settingLabel("出题页码范围"))
-        val pages = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val start = settingInput(prefs.getInt("pageStart", 1).toString())
-        val end = settingInput(prefs.getInt("pageEnd", 20).toString())
-        pages.addView(start, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        pages.addView(end, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        card.addView(pages)
-
         card.addView(settingLabel("突击间隔（分钟）"))
         val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val min = settingInput(prefs.getInt("interval_min", 25).toString())
@@ -1001,7 +993,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         Toast.makeText(this, "正在逐张识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         val queue = ArrayDeque(uris)
 
@@ -1013,23 +1007,50 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
                 return
             }
+
             val uri = queue.removeFirst()
             try {
                 val bitmap = loadScaledBitmap(uri)
                 val image = InputImage.fromBitmap(bitmap, 0)
                 recognizer.process(image)
                     .addOnSuccessListener { result ->
-                        val lines = result.text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-                        var pending: String? = null
+                        val text = result.text
+                        val lines = text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                        val added = mutableSetOf<String>()
+
+                        var pendingEnglish: String? = null
                         lines.forEach { line ->
-                            val en = Regex("[A-Za-z]{2,}").find(line)?.value?.lowercase()
-                            val zh = Regex("[\\u4e00-\\u9fff]+").find(line)?.value
-                            if (en != null && zh != null) {
-                                addEntry(en, zh); pending = null
-                            } else if (en != null) {
-                                pending = en
-                            } else if (zh != null && pending != null) {
-                                addEntry(pending!!, zh); pending = null
+                            val english = Regex("[A-Za-z]{2,}").findAll(line)
+                                .map { it.value.lowercase() }.toList()
+                            val chinese = Regex("[\\u4e00-\\u9fff]+").findAll(line)
+                                .map { it.value }.toList()
+
+                            if (english.isNotEmpty() && chinese.isNotEmpty()) {
+                                english.forEachIndexed { i, word ->
+                                    val meaning = chinese.getOrElse(i) { chinese.last() }
+                                    if (added.add(word)) addEntry(word, meaning)
+                                }
+                                pendingEnglish = null
+                            } else if (english.isNotEmpty()) {
+                                pendingEnglish = english.last()
+                            } else if (chinese.isNotEmpty() && pendingEnglish != null) {
+                                val word = pendingEnglish!!
+                                if (added.add(word)) addEntry(word, chinese.first())
+                                pendingEnglish = null
+                            }
+                        }
+
+                        val allEnglish = Regex("[A-Za-z]{2,}").findAll(text)
+                            .map { it.value.lowercase() }.distinct().toList()
+                        val allChinese = Regex("[\\u4e00-\\u9fff]+").findAll(text)
+                            .map { it.value }.distinct().toList()
+
+                        if (allEnglish.isNotEmpty() && allChinese.isNotEmpty()) {
+                            val count = minOf(allEnglish.size, allChinese.size)
+                            for (i in 0 until count) {
+                                if (added.add(allEnglish[i])) {
+                                    addEntry(allEnglish[i], allChinese[i])
+                                }
                             }
                         }
                     }
@@ -1041,6 +1062,7 @@ class MainActivity : AppCompatActivity() {
                 next()
             }
         }
+
         next()
     }
 
