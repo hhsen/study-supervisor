@@ -1033,7 +1033,7 @@ class MainActivity : AppCompatActivity() {
             val uri = queue.removeFirst()
             try {
                 val bitmap = loadScaledBitmap(uri)
-                val image = InputImage.fromBitmap(bitmap, 0)
+                val image = InputImage.fromBitmap(enhanceForOcr(bitmap), 0)
                 recognizer.process(image)
                     .addOnSuccessListener { result ->
                         val text = result.text
@@ -1147,7 +1147,7 @@ class MainActivity : AppCompatActivity() {
             val uri = queue.removeFirst()
             try {
                 val bitmap = loadScaledBitmap(uri)
-                val image = InputImage.fromBitmap(bitmap, 0)
+                val image = InputImage.fromBitmap(enhanceForOcr(bitmap), 0)
 
                 chinese.process(image)
                     .addOnSuccessListener { extract(it.text) }
@@ -1166,12 +1166,32 @@ class MainActivity : AppCompatActivity() {
 
         next()
     }
+    private fun enhanceForOcr(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val r = (color shr 16) and 0xFF
+            val g = (color shr 8) and 0xFF
+            val b = color and 0xFF
+            val gray = (r * 299 + g * 587 + b * 114) / 1000
+            val boosted = ((gray - 128) * 1.8 + 128).toInt().coerceIn(0, 255)
+            val value = if (boosted < 145) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+            pixels[i] = value
+        }
+
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        return bitmap
+    }
     private fun loadScaledBitmap(uri: Uri): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
             ?: throw IOException("无法读取图片")
         var sample = 1
-        while (bounds.outWidth / (sample * 2) >= 1600 || bounds.outHeight / (sample * 2) >= 1600) sample *= 2
+        while (bounds.outWidth / (sample * 2) >= 2400 || bounds.outHeight / (sample * 2) >= 2400) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         return contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, options)
