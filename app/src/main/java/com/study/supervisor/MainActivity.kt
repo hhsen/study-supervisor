@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.util.Base64
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -32,7 +33,11 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
@@ -194,7 +199,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-            if (!uris.isNullOrEmpty()) importImagesV3(uris)
+            if (!uris.isNullOrEmpty()) importImagesV4(uris)
         }
 
     private val notificationPermission =
@@ -584,6 +589,19 @@ class MainActivity : AppCompatActivity() {
         actions.addView(makeTealButton("导入图片") { pickWordPhotos.launch("image/*") })
         actions.addView(makeTealButton("添加单词") { showAddDialog() })
         content.addView(actions)
+        content.addView(makeTealButton("清空所有单词") {
+            AlertDialog.Builder(this)
+                .setTitle("清空词库")
+                .setMessage("确定删除全部单词吗？此操作无法撤销。")
+                .setPositiveButton("全部删除") { _, _ ->
+                    entries.clear()
+                    saveEntries()
+                    showPage("vocab")
+                    Toast.makeText(this, "词库已清空", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        })
 
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1324,6 +1342,144 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 processEnhanced(uri) { next() }
+            }
+        }
+
+        next()
+    }
+    private fun extractOcrText(text: String) {
+        val lines = text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        val added = mutableSetOf<String>()
+        var pendingEnglish: String? = null
+
+        lines.forEach { line ->
+            val en = Regex("[A-Za-z]{2,}").findAll(line)
+                .map { it.value.lowercase() }.toList()
+            val zh = Regex("[\\u4e00-\\u9fff]+").findAll(line)
+                .map { it.value }.toList()
+
+            if (en.isNotEmpty() && zh.isNotEmpty()) {
+                en.forEachIndexed { index, word ->
+                    val meaning = zh.getOrElse(index) { zh.first() }
+                    if (added.add(word)) addEntry(word, meaning)
+                }
+                pendingEnglish = null
+            } else if (en.isNotEmpty()) {
+                pendingEnglish = en.last()
+            } else if (zh.isNotEmpty() && pendingEnglish != null) {
+                val word = pendingEnglish!!
+                if (added.add(word)) addEntry(word, zh.first())
+                pendingEnglish = null
+            }
+        }
+
+        val allEn = Regex("[A-Za-z]{2,}").findAll(text)
+            .map { it.value.lowercase() }.distinct().toList()
+        val allZh = Regex("[\\u4e00-\\u9fff]+").findAll(text)
+            .map { it.value }.distinct().toList()
+
+        if (allEn.isNotEmpty() && allZh.isNotEmpty()) {
+            val count = minOf(allEn.size, allZh.size)
+            for (i in 0 until count) {
+                if (added.add(allEn[i])) addEntry(allEn[i], allZh[i])
+            }
+        } else if (allEn.isNotEmpty()) {
+            allEn.forEach { if (added.add(it)) addEntry(it, meaningFor(it)) }
+        }
+    }
+
+    private fun recognizeWithOcrSpace(uri: Uri, callback: (String?) -> Unit) {
+        Thread {
+            var resultText: String? = null
+            try {
+                val bitmap = loadScaledBitmap(uri)
+                val output = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)
+                bitmap.recycle()
+
+                val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                val imageData = URLEncoder.encode("data:image/jpeg;base64,$base64", "UTF-8")
+                val postData =
+                    "apikey=helloworld&language=chs&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
+
+                val connection =
+                    URL("https://api.ocr.space/parse/image").openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.connectTimeout = 30000
+                connection.readTimeout = 30000
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/x-www-form-urlencoded"
+                )
+
+                connection.outputStream.use {
+                    it.write(postData.toByteArray(Charsets.UTF_8))
+                }
+
+                val responseCode = connection.responseCode
+                if (responseCode in 200..299) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    val json = JSONObject(response)
+
+                    if (!json.optBoolean("IsErroredOnProcessing", true)) {
+                        val results = json.optJSONArray("ParsedResults")
+                        resultText = results
+                            ?.optJSONObject(0)
+                            ?.optString("ParsedText")
+                            ?.takeIf { it.isNotBlank() }
+                    }
+                }
+
+                connection.disconnect()
+            } catch (e: Exception) {
+                resultText = null
+            }
+
+            runOnUiThread { callback(resultText) }
+        }.start()
+    }
+
+    private fun importImagesV4(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+
+        val queue = ArrayDeque(uris)
+        val debugTexts = mutableListOf<String>()
+
+        fun next() {
+            if (queue.isEmpty()) {
+                saveEntries()
+                showPage("vocab")
+
+                if (entries.isEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("OCR 识别结果")
+                        .setMessage(
+                            debugTexts.joinToString("\n---\n")
+                                .ifBlank { "OCR 没有返回文字，请尝试更清晰、光线更好的图片。" }
+                        )
+                        .setPositiveButton("知道了", null)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "导入完成，共 ${entries.size} 词",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return
+            }
+
+            val uri = queue.removeFirst()
+            recognizeWithOcrSpace(uri) { text ->
+                if (text.isNullOrBlank()) {
+                    debugTexts.add("图片没有识别到文字")
+                } else {
+                    debugTexts.add(text)
+                    extractOcrText(text)
+                }
+                next()
             }
         }
 
