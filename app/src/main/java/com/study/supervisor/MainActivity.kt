@@ -1523,7 +1523,7 @@ class MainActivity : AppCompatActivity() {
                 val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
                 val imageData = URLEncoder.encode("data:image/jpeg;base64,$base64", "UTF-8")
                 val postData =
-                    "apikey=helloworld&language=chs&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
+                    "apikey=helloworld&language=eng&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
 
                 val connection =
                     URL("https://api.ocr.space/parse/image").openConnection() as HttpURLConnection
@@ -1618,7 +1618,7 @@ class MainActivity : AppCompatActivity() {
                 val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
                 val imageData = URLEncoder.encode("data:image/jpeg;base64,$base64", "UTF-8")
                 val postData =
-                    "apikey=helloworld&language=chs&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
+                    "apikey=helloworld&language=eng&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
 
                 val connection =
                     URL("https://api.ocr.space/parse/image").openConnection() as HttpURLConnection
@@ -1691,12 +1691,17 @@ class MainActivity : AppCompatActivity() {
 
             recognizeBitmapWithOcrSpace(leftBitmap) { leftText ->
                 recognizeBitmapWithOcrSpace(rightBitmap) { rightText ->
-                    val combined = listOfNotNull(leftText, rightText)
-                        .joinToString("\n")
+                    val englishText = leftText.orEmpty()
+                    if (englishText.isNotBlank()) {
+                        debugTexts.add(englishText)
 
-                    if (combined.isNotBlank()) {
-                        debugTexts.add(combined)
-                        extractOcrText(combined)
+                        Regex("[A-Za-z]{2,}")
+                            .findAll(englishText)
+                            .map { it.value.lowercase() }
+                            .forEach { rawWord ->
+                                val correctedWord = correctWord(rawWord)
+                                addEntry(correctedWord, meaningFor(correctedWord))
+                            }
                     }
 
                     leftBitmap.recycle()
