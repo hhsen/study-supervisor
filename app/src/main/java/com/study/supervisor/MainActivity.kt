@@ -193,7 +193,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-            if (!uris.isNullOrEmpty()) importImagesV2(uris)
+            if (!uris.isNullOrEmpty()) importImagesV3(uris)
         }
 
     private val notificationPermission =
@@ -1185,6 +1185,120 @@ class MainActivity : AppCompatActivity() {
 
         bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
         return bitmap
+    }
+    private fun importImagesV3(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在识别 ${uris.size} 张图片...", Toast.LENGTH_SHORT).show()
+
+        val chinese = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+        val latin = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+        val queue = ArrayDeque(uris)
+
+        fun extractResult(result: com.google.mlkit.vision.text.Text) {
+            val lines = result.textBlocks.flatMap { block ->
+                block.lines.map {
+                    it.text to (it.boundingBox?.centerY() ?: 0)
+                }
+            }
+
+            val englishLines = lines.filter { Regex("[A-Za-z]{2,}").containsMatchIn(it.first) }
+            val chineseLines = lines.filter { Regex("[\\u4e00-\\u9fff]+").containsMatchIn(it.first) }
+
+            englishLines.forEach { (line, y) ->
+                Regex("[A-Za-z]{2,}").findAll(line)
+                    .map { it.value.lowercase() }
+                    .forEach { word ->
+                        val nearestChinese = chineseLines.minByOrNull {
+                            abs(it.second - y)
+                        }?.first
+
+                        val meaning = Regex("[\\u4e00-\\u9fff]+")
+                            .find(nearestChinese ?: "")
+                            ?.value
+                            ?: meaningFor(word)
+
+                        addEntry(word, meaning)
+                    }
+            }
+
+            lines.forEach { line ->
+                val en = Regex("[A-Za-z]{2,}").findAll(line.first)
+                    .map { it.value.lowercase() }.toList()
+                val zh = Regex("[\\u4e00-\\u9fff]+").findAll(line.first)
+                    .map { it.value }.toList()
+
+                en.forEachIndexed { index, word ->
+                    addEntry(word, zh.getOrElse(index) { zh.firstOrNull() ?: meaningFor(word) })
+                }
+            }
+
+            val allEn = Regex("[A-Za-z]{2,}").findAll(result.text)
+                .map { it.value.lowercase() }.distinct().toList()
+            val allZh = Regex("[\\u4e00-\\u9fff]+").findAll(result.text)
+                .map { it.value }.distinct().toList()
+
+            if (allEn.isNotEmpty() && allZh.isNotEmpty()) {
+                val count = minOf(allEn.size, allZh.size)
+                for (i in 0 until count) {
+                    addEntry(allEn[i], allZh[i])
+                }
+            } else if (allEn.isNotEmpty()) {
+                allEn.forEach { addEntry(it, meaningFor(it)) }
+            }
+        }
+
+        fun processImage(
+            image: InputImage,
+            bitmap: Bitmap?,
+            finish: () -> Unit
+        ) {
+            chinese.process(image)
+                .addOnSuccessListener { extractResult(it) }
+                .addOnCompleteListener {
+                    latin.process(image)
+                        .addOnSuccessListener { extractResult(it) }
+                        .addOnCompleteListener {
+                            bitmap?.recycle()
+                            finish()
+                        }
+                }
+        }
+
+        fun processEnhanced(uri: Uri) {
+            try {
+                val bitmap = loadScaledBitmap(uri)
+                val image = InputImage.fromBitmap(enhanceForOcr(bitmap), 0)
+                processImage(image, bitmap) { next() }
+            } catch (e: Exception) {
+                Toast.makeText(this, "图片读取失败：${e.message}", Toast.LENGTH_SHORT).show()
+                next()
+            }
+        }
+
+        fun next() {
+            if (queue.isEmpty()) {
+                chinese.close()
+                latin.close()
+                saveEntries()
+                showPage("vocab")
+                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            val uri = queue.removeFirst()
+            val before = entries.size
+
+            try {
+                val image = InputImage.fromFilePath(this, uri)
+                processImage(image, null) {
+                    if (entries.size == before) processEnhanced(uri) else next()
+                }
+            } catch (e: Exception) {
+                processEnhanced(uri)
+            }
+        }
+
+        next()
     }
     private fun loadScaledBitmap(uri: Uri): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
