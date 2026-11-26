@@ -59,6 +59,73 @@ data class VocabEntry(
     val sentenceMeaning: String
 )
 
+private val OCR_WORDS = mapOf(
+    "region" to "地区",
+    "regional" to "地区的",
+    "origin" to "起源；源头",
+    "original" to "最初的；原始的",
+    "originate" to "创建；起源",
+    "source" to "来源",
+    "resource" to "资源",
+    "river" to "河；江",
+    "derive" to "源于；获得",
+    "deprive" to "剥夺；使丧失",
+    "size" to "大小；尺寸",
+    "seize" to "抓住；夺取",
+    "rob" to "抢劫",
+    "robbery" to "盗取；抢劫",
+    "rub" to "摩擦；揉搓",
+    "thrive" to "繁荣；茁壮成长",
+    "strive" to "努力；奋斗",
+    "effort" to "努力；努力的事",
+    "luxury" to "奢侈品；奢华",
+    "luxurious" to "奢侈的；豪华的",
+    "treasure" to "财富；珍爱",
+    "price" to "价格",
+    "precious" to "珍贵的",
+    "beloved" to "亲爱的；深受喜爱的",
+    "cherish" to "珍爱；钟爱",
+    "appreciate" to "欣赏；感激",
+    "valuable" to "有价值的；很有用的",
+    "cost" to "花费；费用",
+    "costly" to "昂贵的",
+    "evaluate" to "评价；评估",
+    "evaluation" to "评价；估计",
+    "mate" to "朋友；伙伴",
+    "estimate" to "估计",
+    "underestimate" to "低估",
+    "reckon" to "估算；认为",
+    "ultimate" to "最终的",
+    "ultimately" to "最终；基本上",
+    "intimate" to "亲密的；密友",
+    "approximate" to "大约的；近似",
+    "approximation" to "大概；大约",
+    "approach" to "接近；方法",
+    "study" to "学习",
+    "book" to "书",
+    "word" to "单词",
+    "sentence" to "句子",
+    "phrase" to "短语",
+    "knowledge" to "知识",
+    "focus" to "专注",
+    "review" to "复习",
+    "persist" to "坚持",
+    "allocate" to "分配",
+    "achieve" to "实现",
+    "progress" to "进步",
+    "practice" to "练习",
+    "remember" to "记住",
+    "understand" to "理解",
+    "english" to "英语",
+    "learn" to "学习",
+    "reading" to "阅读",
+    "writing" to "写作",
+    "important" to "重要的",
+    "difficult" to "困难的",
+    "success" to "成功",
+    "goal" to "目标",
+    "plan" to "计划"
+)
 object StudyNotifications {
     const val CHANNEL_ID = "study_check_channel"
 
@@ -932,7 +999,9 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun meaningFor(word: String) = MEANINGS[word] ?: "待补充中文意思"
+    private fun meaningFor(word: String): String {
+        return MEANINGS[word] ?: OCR_WORDS[word] ?: "待补充中文意思"
+    }
 
     private fun phraseFor(word: String) = when {
         word.endsWith("ing") -> "keep $word"
@@ -946,6 +1015,35 @@ class MainActivity : AppCompatActivity() {
         else -> "I $word every day."
     }
 
+    private fun levenshtein(left: String, right: String): Int {
+        val dp = Array(left.length + 1) { IntArray(right.length + 1) }
+
+        for (i in 0..left.length) dp[i][0] = i
+        for (j in 0..right.length) dp[0][j] = j
+
+        for (i in 1..left.length) {
+            for (j in 1..right.length) {
+                val cost = if (left[i - 1] == right[j - 1]) 0 else 1
+                dp[i][j] = minOf(
+                    dp[i - 1][j] + 1,
+                    dp[i][j - 1] + 1,
+                    dp[i - 1][j - 1] + cost
+                )
+            }
+        }
+
+        return dp[left.length][right.length]
+    }
+
+    private fun correctWord(raw: String): String {
+        val word = raw.lowercase()
+        if (OCR_WORDS.containsKey(word)) return word
+
+        return OCR_WORDS.keys
+            .minByOrNull { levenshtein(word, it) }
+            ?.takeIf { levenshtein(word, it) <= 2 }
+            ?: word
+    }
     private fun makeEntry(word: String, meaning: String): VocabEntry {
         val phrase = phraseFor(word)
         val sentence = sentenceFor(word)
