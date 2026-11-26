@@ -1021,13 +1021,22 @@ class MainActivity : AppCompatActivity() {
 
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         val queue = ArrayDeque(uris)
+        val debugTexts = mutableListOf<String>()
 
         fun next() {
             if (queue.isEmpty()) {
                 recognizer.close()
                 saveEntries()
                 showPage("vocab")
-                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                if (entries.isEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("OCR 识别结果")
+                        .setMessage(debugTexts.joinToString("\n---\n").ifBlank { "OCR 没有返回文字" })
+                        .setPositiveButton("知道了", null)
+                        .show()
+                } else {
+                    Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                }
                 return
             }
 
@@ -1096,6 +1105,7 @@ class MainActivity : AppCompatActivity() {
         val chinese = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         val latin = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         val queue = ArrayDeque(uris)
+        val debugTexts = mutableListOf<String>()
 
         fun extract(text: String) {
             val lines = text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
@@ -1141,7 +1151,15 @@ class MainActivity : AppCompatActivity() {
                 latin.close()
                 saveEntries()
                 showPage("vocab")
-                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                if (entries.isEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("OCR 识别结果")
+                        .setMessage(debugTexts.joinToString("\n---\n").ifBlank { "OCR 没有返回文字" })
+                        .setPositiveButton("知道了", null)
+                        .show()
+                } else {
+                    Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                }
                 return
             }
 
@@ -1194,8 +1212,10 @@ class MainActivity : AppCompatActivity() {
         val chinese = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         val latin = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         val queue = ArrayDeque(uris)
+        val debugTexts = mutableListOf<String>()
 
         fun extractResult(result: com.google.mlkit.vision.text.Text) {
+            debugTexts.add(result.text)
             val lines = result.textBlocks.flatMap { block ->
                 block.lines.map {
                     it.text to (it.boundingBox?.centerY() ?: 0)
@@ -1282,7 +1302,15 @@ class MainActivity : AppCompatActivity() {
                 latin.close()
                 saveEntries()
                 showPage("vocab")
-                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                if (entries.isEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("OCR 识别结果")
+                        .setMessage(debugTexts.joinToString("\n---\n").ifBlank { "OCR 没有返回文字" })
+                        .setPositiveButton("知道了", null)
+                        .show()
+                } else {
+                    Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+                }
                 return
             }
 
