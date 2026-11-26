@@ -1755,17 +1755,40 @@ class MainActivity : AppCompatActivity() {
         processNextImage()
     }
     private fun loadScaledBitmap(uri: Uri): Bitmap {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: throw IOException("无法读取图片")
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= 2400 || bounds.outHeight / (sample * 2) >= 2400) sample *= 2
-        val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, options)
-        } ?: throw IOException("无法解码图片")
-    }
+        val rawBitmap = try {
+            MediaStore.Images.Media.getBitmap(contentResolver, uri)
+        } catch (e: Exception) {
+            val stream = try {
+                contentResolver.openInputStream(uri)
+            } catch (e2: Exception) {
+                uri.path?.let { FileInputStream(File(it)) }
+            }
 
+            stream?.use { BitmapFactory.decodeStream(it) }
+                ?: throw IOException("无法读取图片")
+        }
+
+        val maxSize = 2400
+        val width = rawBitmap.width
+        val height = rawBitmap.height
+        val scale = minOf(
+            maxSize.toFloat() / width,
+            maxSize.toFloat() / height,
+            1f
+        )
+
+        if (scale >= 1f) return rawBitmap
+
+        val scaled = Bitmap.createScaledBitmap(
+            rawBitmap,
+            (width * scale).toInt().coerceAtLeast(1),
+            (height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+
+        if (scaled !== rawBitmap) rawBitmap.recycle()
+        return scaled
+    }
     private fun randomQuestion(): Question {
         val words = entries.map { it.word }.distinct()
         if (words.size >= 4) {
