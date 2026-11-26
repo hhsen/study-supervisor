@@ -35,6 +35,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -1264,14 +1265,14 @@ class MainActivity : AppCompatActivity() {
                 }
         }
 
-        fun processEnhanced(uri: Uri) {
+        fun processEnhanced(uri: Uri, onDone: () -> Unit) {
             try {
                 val bitmap = loadScaledBitmap(uri)
                 val image = InputImage.fromBitmap(enhanceForOcr(bitmap), 0)
-                processImage(image, bitmap) { next() }
+                processImage(image, bitmap) { onDone() }
             } catch (e: Exception) {
                 Toast.makeText(this, "图片读取失败：${e.message}", Toast.LENGTH_SHORT).show()
-                next()
+                onDone()
             }
         }
 
@@ -1291,10 +1292,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 val image = InputImage.fromFilePath(this, uri)
                 processImage(image, null) {
-                    if (entries.size == before) processEnhanced(uri) else next()
+                    if (entries.size == before) processEnhanced(uri) { next() } else next()
                 }
             } catch (e: Exception) {
-                processEnhanced(uri)
+                processEnhanced(uri) { next() }
             }
         }
 
