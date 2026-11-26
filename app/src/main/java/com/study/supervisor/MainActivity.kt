@@ -124,7 +124,29 @@ private val OCR_WORDS = mapOf(
     "difficult" to "困难的",
     "success" to "成功",
     "goal" to "目标",
-    "plan" to "计划"
+    "plan" to "计划",
+    "bias" to "偏见",
+    "neutral" to "中立的",
+    "depend" to "依靠",
+    "independent" to "独立的",
+    "independence" to "独立",
+    "acute" to "严重的；急性的",
+    "severe" to "严重的；严厉的",
+    "grave" to "坟墓；严重的",
+    "gravity" to "严重性；重力",
+    "eve" to "前夕",
+    "grieve" to "感到悲痛",
+    "grief" to "悲伤；悲痛",
+    "relieve" to "缓解；减轻",
+    "relief" to "轻松；减轻",
+    "believe" to "相信",
+    "belief" to "信念；相信",
+    "full" to "满的",
+    "grateful" to "感激的",
+    "gratitude" to "感激",
+    "grant" to "拨款；授予",
+    "grind" to "磨碎",
+    "polish" to "擦亮；润色"
 )
 object StudyNotifications {
     const val CHANNEL_ID = "study_check_channel"
@@ -266,7 +288,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-            if (!uris.isNullOrEmpty()) importImagesV4(uris)
+            if (!uris.isNullOrEmpty()) importImagesV5(uris)
         }
 
     private val notificationPermission =
@@ -1582,6 +1604,155 @@ class MainActivity : AppCompatActivity() {
         }
 
         next()
+    }
+    private fun recognizeBitmapWithOcrSpace(bitmap: Bitmap, callback: (String?) -> Unit) {
+        Thread {
+            var resultText: String? = null
+            try {
+                val output = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 94, output)
+
+                val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                val imageData = URLEncoder.encode("data:image/jpeg;base64,$base64", "UTF-8")
+                val postData =
+                    "apikey=helloworld&language=chs&OCREngine=2&isTable=true&scale=true&base64Image=$imageData"
+
+                val connection =
+                    URL("https://api.ocr.space/parse/image").openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.connectTimeout = 30000
+                connection.readTimeout = 30000
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/x-www-form-urlencoded"
+                )
+
+                connection.outputStream.use {
+                    it.write(postData.toByteArray(Charsets.UTF_8))
+                }
+
+                if (connection.responseCode in 200..299) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    val json = JSONObject(response)
+
+                    if (!json.optBoolean("IsErroredOnProcessing", true)) {
+                        resultText = json.optJSONArray("ParsedResults")
+                            ?.optJSONObject(0)
+                            ?.optString("ParsedText")
+                            ?.takeIf { it.isNotBlank() }
+                    }
+                }
+
+                connection.disconnect()
+            } catch (e: Exception) {
+                resultText = null
+            }
+
+            runOnUiThread { callback(resultText) }
+        }.start()
+    }
+
+    private fun importImagesV5(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在识别表格图片...", Toast.LENGTH_SHORT).show()
+
+        val imageQueue = ArrayDeque(uris)
+        val debugTexts = mutableListOf<String>()
+
+        fun finish() {
+            saveEntries()
+            showPage("vocab")
+
+            if (entries.isEmpty()) {
+                AlertDialog.Builder(this)
+                    .setTitle("表格 OCR 识别结果")
+                    .setMessage(
+                        debugTexts.joinToString("\n---\n")
+                            .ifBlank { "OCR 没有返回文字，请尝试更清晰、光线更好的图片。" }
+                    )
+                    .setPositiveButton("知道了", null)
+                    .show()
+            } else {
+                Toast.makeText(this, "导入完成，共 ${entries.size} 词", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        fun processCropQueue(cropQueue: ArrayDeque<Pair<Bitmap, Bitmap>>) {
+            if (cropQueue.isEmpty()) {
+                if (imageQueue.isEmpty()) finish()
+                return
+            }
+
+            val (leftBitmap, rightBitmap) = cropQueue.removeFirst()
+
+            recognizeBitmapWithOcrSpace(leftBitmap) { leftText ->
+                recognizeBitmapWithOcrSpace(rightBitmap) { rightText ->
+                    val combined = listOfNotNull(leftText, rightText)
+                        .joinToString("\n")
+
+                    if (combined.isNotBlank()) {
+                        debugTexts.add(combined)
+                        extractOcrText(combined)
+                    }
+
+                    leftBitmap.recycle()
+                    rightBitmap.recycle()
+                    processCropQueue(cropQueue)
+                }
+            }
+        }
+
+        fun processNextImage() {
+            if (imageQueue.isEmpty()) {
+                finish()
+                return
+            }
+
+            val uri = imageQueue.removeFirst()
+
+            try {
+                val source = loadScaledBitmap(uri)
+                val cropQueue = ArrayDeque<Pair<Bitmap, Bitmap>>()
+
+                val leftEnd = (source.width * 0.32f).toInt()
+                val rightStart = (source.width * 0.28f).toInt()
+                val rightEnd = (source.width * 0.68f).toInt()
+                val chunkHeight = 1100
+
+                var y = 0
+                while (y < source.height) {
+                    val height = minOf(chunkHeight, source.height - y)
+
+                    val left = Bitmap.createBitmap(
+                        source,
+                        0,
+                        y,
+                        leftEnd.coerceAtMost(source.width),
+                        height
+                    )
+
+                    val right = Bitmap.createBitmap(
+                        source,
+                        rightStart.coerceAtMost(source.width - 1),
+                        y,
+                        (rightEnd - rightStart).coerceAtMost(source.width - rightStart),
+                        height
+                    )
+
+                    cropQueue.add(left to right)
+                    y += height
+                }
+
+                source.recycle()
+                processCropQueue(cropQueue)
+            } catch (e: Exception) {
+                debugTexts.add("图片裁剪失败：${e.message}")
+                processNextImage()
+            }
+        }
+
+        processNextImage()
     }
     private fun loadScaledBitmap(uri: Uri): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
