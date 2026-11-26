@@ -13,6 +13,9 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.provider.MediaStore
+import java.io.File
+import java.io.FileInputStream
 import android.util.Base64
 import android.os.Build
 import android.os.Bundle
