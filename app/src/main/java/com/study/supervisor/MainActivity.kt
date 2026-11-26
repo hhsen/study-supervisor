@@ -1662,8 +1662,10 @@ class MainActivity : AppCompatActivity() {
 
         val imageQueue = ArrayDeque(uris)
         val debugTexts = mutableListOf<String>()
+        val latinRecognizer = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
 
         fun finish() {
+            latinRecognizer.close()
             saveEntries()
             showPage("vocab")
 
@@ -1689,24 +1691,51 @@ class MainActivity : AppCompatActivity() {
 
             val (leftBitmap, rightBitmap) = cropQueue.removeFirst()
 
-            recognizeBitmapWithOcrSpace(leftBitmap) { leftText ->
-                recognizeBitmapWithOcrSpace(rightBitmap) { rightText ->
-                    val englishText = leftText.orEmpty()
-                    if (englishText.isNotBlank()) {
-                        debugTexts.add(englishText)
+            fun saveEnglish(text: String?) {
+                val englishText = text.orEmpty()
 
-                        Regex("[A-Za-z]{2,}")
-                            .findAll(englishText)
-                            .map { it.value.lowercase() }
-                            .forEach { rawWord ->
-                                val correctedWord = correctWord(rawWord)
-                                addEntry(correctedWord, meaningFor(correctedWord))
-                            }
-                    }
+                if (englishText.isNotBlank()) {
+                    debugTexts.add(englishText)
 
+                    Regex("[A-Za-z]{2,}")
+                        .findAll(englishText)
+                        .map { it.value.lowercase() }
+                        .forEach { rawWord ->
+                            val correctedWord = correctWord(rawWord)
+                            addEntry(correctedWord, meaningFor(correctedWord))
+                        }
+                }
+            }
+
+            recognizeBitmapWithOcrSpace(leftBitmap) { onlineText ->
+                if (!onlineText.isNullOrBlank()) {
+                    saveEnglish(onlineText)
                     leftBitmap.recycle()
                     rightBitmap.recycle()
                     processCropQueue(cropQueue)
+                } else {
+                    latinRecognizer.process(InputImage.fromBitmap(leftBitmap, 0))
+                        .addOnSuccessListener { result ->
+                            saveEnglish(result.text)
+                        }
+                        .addOnCompleteListener {
+                            if (entries.isEmpty()) {
+                                val enhanced = enhanceForOcr(leftBitmap)
+                                latinRecognizer.process(InputImage.fromBitmap(enhanced, 0))
+                                    .addOnSuccessListener { result ->
+                                        saveEnglish(result.text)
+                                    }
+                                    .addOnCompleteListener {
+                                        leftBitmap.recycle()
+                                        rightBitmap.recycle()
+                                        processCropQueue(cropQueue)
+                                    }
+                            } else {
+                                leftBitmap.recycle()
+                                rightBitmap.recycle()
+                                processCropQueue(cropQueue)
+                            }
+                        }
                 }
             }
         }
