@@ -392,7 +392,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(COLOR_CARD)
                 cornerRadius = 26f
             }
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 setMargins(0, 0, 14, 0)
             }
         }
@@ -625,7 +625,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(COLOR_TEAL)
                 cornerRadius = 18f
             }
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 setMargins(0, 0, 12, 0)
             }
             setOnClickListener { action() }
