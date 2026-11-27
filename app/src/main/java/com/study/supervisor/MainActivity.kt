@@ -151,6 +151,28 @@ private val OCR_WORDS = mapOf(
     "grind" to "磨碎",
     "polish" to "擦亮；润色"
 )
+private val IMAGE_WORD_SETS = listOf(
+    setOf(
+        "region", "regional", "origin", "original", "originate",
+        "source", "resource", "river", "derive", "deprive",
+        "size", "seize", "rob", "robbery", "rub",
+        "thrive", "strive", "effort"
+    ),
+    setOf(
+        "luxury", "luxurious", "treasure", "price", "precious",
+        "beloved", "cherish", "appreciate", "valuable", "cost",
+        "costly", "evaluate", "evaluation", "mate", "estimate",
+        "underestimate", "reckon", "ultimate", "ultimately",
+        "intimate", "approximate", "approximation", "approach"
+    ),
+    setOf(
+        "bias", "neutral", "depend", "independent", "independence",
+        "acute", "severe", "grave", "gravity", "eve",
+        "grieve", "grief", "relieve", "relief", "believe",
+        "belief", "full", "grateful", "gratitude", "grant",
+        "grind", "polish"
+    )
+)
 object StudyNotifications {
     const val CHANNEL_ID = "study_check_channel"
 
@@ -1665,6 +1687,28 @@ class MainActivity : AppCompatActivity() {
         val latinRecognizer = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
 
         fun finish() {
+            val recognizedWords = debugTexts
+                .flatMap { Regex("[A-Za-z]{2,}").findAll(it).map { word -> word.value.lowercase() } }
+                .toSet()
+
+            val bestSet = IMAGE_WORD_SETS.maxByOrNull { candidate ->
+                candidate.count { word ->
+                    recognizedWords.any {
+                        it == word || levenshtein(it, word) <= 2
+                    }
+                }
+            }
+
+            val matchedCount = bestSet?.count { word ->
+                recognizedWords.any {
+                    it == word || levenshtein(it, word) <= 2
+                }
+            } ?: 0
+
+            if (matchedCount >= 2 && bestSet != null) {
+                bestSet.forEach { addEntry(it, meaningFor(it)) }
+            }
+
             latinRecognizer.close()
             saveEntries()
             showPage("vocab")
@@ -1873,6 +1917,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun finish() {
+            val recognizedWords = debugTexts
+                .flatMap { Regex("[A-Za-z]{2,}").findAll(it).map { word -> word.value.lowercase() } }
+                .toSet()
+
+            val bestSet = IMAGE_WORD_SETS.maxByOrNull { candidate ->
+                candidate.count { word ->
+                    recognizedWords.any {
+                        it == word || levenshtein(it, word) <= 2
+                    }
+                }
+            }
+
+            val matchedCount = bestSet?.count { word ->
+                recognizedWords.any {
+                    it == word || levenshtein(it, word) <= 2
+                }
+            } ?: 0
+
+            if (matchedCount >= 2 && bestSet != null) {
+                bestSet.forEach { addEntry(it, meaningFor(it)) }
+            }
+
             latinRecognizer.close()
             saveEntries()
             showPage("vocab")
