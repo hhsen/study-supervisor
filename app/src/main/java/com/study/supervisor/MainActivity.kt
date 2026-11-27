@@ -291,7 +291,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-            if (!uris.isNullOrEmpty()) importImagesV5(uris)
+            if (!uris.isNullOrEmpty()) importImagesV6(uris)
         }
 
     private val notificationPermission =
@@ -1785,6 +1785,153 @@ class MainActivity : AppCompatActivity() {
                 processCropQueue(cropQueue)
             } catch (e: Exception) {
                 debugTexts.add("图片裁剪失败：${e.message}")
+                processNextImage()
+            }
+        }
+
+        processNextImage()
+    }
+    private fun buildWordRowBitmaps(source: Bitmap): List<Bitmap> {
+        val leftWidth = (source.width * 0.34f).toInt().coerceAtLeast(1)
+        val height = source.height
+        val pixels = IntArray(leftWidth * height)
+        source.getPixels(pixels, 0, leftWidth, 0, 0, leftWidth, height)
+
+        val darkCounts = IntArray(height)
+
+        for (y in 0 until height) {
+            var count = 0
+            for (x in 0 until leftWidth) {
+                val color = pixels[y * leftWidth + x]
+                val r = (color shr 16) and 0xFF
+                val g = (color shr 8) and 0xFF
+                val b = color and 0xFF
+                val gray = (r * 299 + g * 587 + b * 114) / 1000
+                if (gray < 115) count++
+            }
+            darkCounts[y] = count
+        }
+
+        val threshold = maxOf(3, (leftWidth * 0.012f).toInt())
+        val active = BooleanArray(height) { darkCounts[it] > threshold }
+        val rows = mutableListOf<Pair<Int, Int>>()
+        var start = -1
+
+        for (y in 0 until height) {
+            if (active[y] && start < 0) start = y
+
+            if ((!active[y] || y == height - 1) && start >= 0) {
+                val end = if (active[y]) y else y - 1
+                if (end - start >= 12) rows.add(start to end)
+                start = -1
+            }
+        }
+
+        if (rows.isEmpty()) {
+            val chunkHeight = 240
+            var y = 0
+            while (y < height) {
+                val h = minOf(chunkHeight, height - y)
+                rows.add(y to (y + h - 1))
+                y += h
+            }
+        }
+
+        return rows.map { (top, bottom) ->
+            val paddedTop = (top - 18).coerceAtLeast(0)
+            val paddedBottom = (bottom + 18).coerceAtMost(height - 1)
+            Bitmap.createBitmap(
+                source,
+                0,
+                paddedTop,
+                leftWidth,
+                paddedBottom - paddedTop + 1
+            )
+        }
+    }
+
+    private fun importImagesV6(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在逐行识别英文单词...", Toast.LENGTH_SHORT).show()
+
+        val imageQueue = ArrayDeque(uris)
+        val latinRecognizer =
+            TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+        val debugTexts = mutableListOf<String>()
+
+        fun saveEnglish(text: String?) {
+            val englishText = text.orEmpty()
+            if (englishText.isNotBlank()) debugTexts.add(englishText)
+
+            Regex("[A-Za-z]{2,}")
+                .findAll(englishText)
+                .map { it.value.lowercase() }
+                .forEach { rawWord ->
+                    val correctedWord = correctWord(rawWord)
+                    addEntry(correctedWord, meaningFor(correctedWord))
+                }
+        }
+
+        fun finish() {
+            latinRecognizer.close()
+            saveEntries()
+            showPage("vocab")
+
+            if (entries.isEmpty()) {
+                AlertDialog.Builder(this)
+                    .setTitle("单词识别结果")
+                    .setMessage(
+                        debugTexts.joinToString("\n")
+                            .ifBlank { "仍未识别到英文单词。" }
+                    )
+                    .setPositiveButton("知道了", null)
+                    .show()
+            } else {
+                Toast.makeText(
+                    this,
+                    "导入完成，共 ${entries.size} 词",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+        fun processRows(rows: ArrayDeque<Bitmap>) {
+            if (rows.isEmpty()) {
+                if (imageQueue.isEmpty()) finish()
+                return
+            }
+
+            val row = rows.removeFirst()
+            val enhanced = enhanceForOcr(row)
+
+            latinRecognizer.process(InputImage.fromBitmap(enhanced, 0))
+                .addOnSuccessListener { result ->
+                    if (result.text.isNotBlank()) {
+                        saveEnglish(result.text)
+                    }
+                }
+                .addOnCompleteListener {
+                    row.recycle()
+                    if (enhanced !== row) enhanced.recycle()
+                    processRows(rows)
+                }
+        }
+
+        fun processNextImage() {
+            if (imageQueue.isEmpty()) {
+                finish()
+                return
+            }
+
+            val uri = imageQueue.removeFirst()
+
+            try {
+                val source = loadScaledBitmap(uri)
+                val rows = ArrayDeque(buildWordRowBitmaps(source))
+                source.recycle()
+                processRows(rows)
+            } catch (e: Exception) {
+                debugTexts.add("图片读取失败：${e.message}")
                 processNextImage()
             }
         }
