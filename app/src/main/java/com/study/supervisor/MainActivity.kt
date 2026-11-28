@@ -311,6 +311,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val pickAiWordPhotos =
+        registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (!uris.isNullOrEmpty()) importWithDoubao(uris)
+        }
+
     private val pickWordPhotos =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
             if (!uris.isNullOrEmpty()) importImagesV6(uris)
@@ -702,6 +707,15 @@ class MainActivity : AppCompatActivity() {
         }
         actions.addView(makeTealButton("导入图片") { pickWordPhotos.launch("image/*") })
         actions.addView(makeTealButton("添加单词") { showAddDialog() })
+        actions.addView(makeTealButton("豆包 AI 识别图片") {
+            val key = prefs.getString("ai_api_key", "").orEmpty()
+            if (key.isBlank()) {
+                Toast.makeText(this, "请先在设置页填写豆包 API Key", Toast.LENGTH_LONG).show()
+                showPage("settings")
+            } else {
+                pickAiWordPhotos.launch("image/*")
+            }
+        })
         content.addView(actions)
         content.addView(makeTealButton("清空所有单词") {
             AlertDialog.Builder(this)
@@ -947,6 +961,20 @@ class MainActivity : AppCompatActivity() {
             Scheduler.scheduleNext(this)
             Toast.makeText(this, "学习时段已保存", Toast.LENGTH_SHORT).show()
         })
+        card.addView(settingLabel("页码范围"))
+        val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val aiPageStart = settingInput(prefs.getInt("pageStart", 1).toString())
+        val aiPageEnd = settingInput(prefs.getInt("pageEnd", 20).toString())
+        pageRow.addView(aiPageStart, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        pageRow.addView(aiPageEnd, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(pageRow)
+
+        card.addView(settingLabel("豆包 API Key"))
+        val aiKeyInput = settingInput(prefs.getString("ai_api_key", "").orEmpty()).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        card.addView(aiKeyInput)
         card.addView(makeTealButton("保存设置") {
             val minV = min.text.toString().toIntOrNull() ?: 25
             val maxV = max.text.toString().toIntOrNull() ?: 45
@@ -1116,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
             val o = JSONObject()
             o.put("word", e.word); o.put("meaning", e.meaning)
             o.put("phrase", e.phrase); o.put("phraseMeaning", e.phraseMeaning)
-            o.put("sentence", e.sentence); o.put("sentenceMeaning", e.sentenceMeaning)
+            o.put("sentence", e.sentence); o.put("sentenceMeaning", e.sentenceMeaning); o.put("page", e.page)
             array.put(o)
         }
         prefs.edit().putString("vocab_json", array.toString()).apply()
@@ -2003,6 +2031,88 @@ class MainActivity : AppCompatActivity() {
         }
 
         processNextImage()
+    }
+    private fun assignPages() {
+        if (entries.isEmpty()) return
+
+        val start = prefs.getInt("pageStart", 1)
+        val end = prefs.getInt("pageEnd", maxOf(start, 20))
+        val last = entries.lastIndex
+
+        for (i in entries.indices) {
+            val page = if (last == 0) {
+                start
+            } else {
+                start + ((end - start) * i / last)
+            }
+            entries[i] = entries[i].copy(page = page)
+        }
+    }
+
+    private fun importWithDoubao(uris: List<Uri>) {
+        val apiKey = prefs.getString("ai_api_key", "").orEmpty()
+        if (apiKey.isBlank()) {
+            Toast.makeText(this, "请先填写豆包 API Key", Toast.LENGTH_SHORT).show()
+            showPage("settings")
+            return
+        }
+
+        val queue = ArrayDeque(uris)
+        val errors = mutableListOf<String>()
+
+        fun next() {
+            if (queue.isEmpty()) {
+                assignPages()
+                saveEntries()
+                showPage("vocab")
+
+                if (entries.isEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("豆包识别失败")
+                        .setMessage(errors.joinToString("\n").ifBlank { "模型没有返回有效单词。" })
+                        .setPositiveButton("知道了", null)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "豆包识别完成，共 ${entries.size} 词",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return
+            }
+
+            val uri = queue.removeFirst()
+
+            try {
+                val bitmap = loadScaledBitmap(uri)
+                DoubaoAi.recognizeWords(apiKey, bitmap) { result ->
+                    bitmap.recycle()
+
+                    result.onSuccess { words ->
+                        words.forEach { item ->
+                            val word = correctWord(item.word)
+                            if (entries.none { it.word == word }) {
+                                entries.add(
+                                    makeEntry(word, item.meaning)
+                                )
+                            }
+                        }
+                    }
+
+                    result.onFailure {
+                        errors.add(it.message ?: "识别失败")
+                    }
+
+                    next()
+                }
+            } catch (e: Exception) {
+                errors.add(e.message ?: "图片读取失败")
+                next()
+            }
+        }
+
+        next()
     }
     private fun loadScaledBitmap(uri: Uri): Bitmap {
         val rawBitmap = try {
