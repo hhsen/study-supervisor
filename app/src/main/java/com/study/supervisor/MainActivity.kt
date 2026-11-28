@@ -59,7 +59,8 @@ data class VocabEntry(
     val phrase: String,
     val phraseMeaning: String,
     val sentence: String,
-    val sentenceMeaning: String
+    val sentenceMeaning: String,
+    val page: Int = 0
 )
 
 private val OCR_WORDS = mapOf(
