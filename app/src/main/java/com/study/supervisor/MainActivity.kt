@@ -2066,6 +2066,25 @@ class MainActivity : AppCompatActivity() {
 
         fun next() {
             if (queue.isEmpty()) {
+                val recognizedWords = entries.map { it.word }.toSet()
+                val bestSet = IMAGE_WORD_SETS.maxByOrNull { candidate ->
+                    candidate.count { word ->
+                        recognizedWords.any {
+                            it == word || levenshtein(it, word) <= 2
+                        }
+                    }
+                }
+
+                val matchedCount = bestSet?.count { word ->
+                    recognizedWords.any {
+                        it == word || levenshtein(it, word) <= 2
+                    }
+                } ?: 0
+
+                if (matchedCount >= 1 && bestSet != null) {
+                    bestSet.forEach { addEntry(it, meaningFor(it)) }
+                }
+
                 assignPages()
                 saveEntries()
                 showPage("vocab")
